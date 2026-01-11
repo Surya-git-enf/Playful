@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: playable-backend
+    runtime: python
+    plan: free
+    autoDeploy: true
+
+    buildCommand: |
+      pip install -r requirements.txt
+      wget https://downloads.tuxfamily.org/godotengine/4.2.1/Godot_v4.2.1-stable_linux.x86_64.zip
+      unzip Godot_v4.2.1-stable_linux.x86_64.zip
+      chmod +x Godot_v4.2.1-stable_linux.x86_64
+      mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
+
+    startCommand: |
+      uvicorn main:app --host 0.0.0.0 --port 8000
