@@ -1,39 +1,61 @@
-import os, json, shutil, subprocess
+import os
+import json
+import time
+import uuid
 
-TEMPLATE_REPO = "https://github.com/Surya-git-enf/game-templates"
-BUILDS = "builds"
-JOBS = "jobs"
+JOBS_DIR = "jobs"
+BUILDS_DIR = "builds"
 
-os.makedirs(BUILDS, exist_ok=True)
+os.makedirs(JOBS_DIR, exist_ok=True)
+os.makedirs(BUILDS_DIR, exist_ok=True)
 
-def build_game(job_id, template):
-    job_file = f"{JOBS}/{job_id}.json"
-    game_dir = f"/tmp/{job_id}"
-    out_dir = f"{BUILDS}/{job_id}"
+def run_worker():
+    while True:
+        for file in os.listdir(JOBS_DIR):
+            if not file.endswith(".json"):
+                continue
 
-    try:
-        subprocess.run(
-            ["git", "clone", TEMPLATE_REPO, game_dir],
-            check=True
-        )
+            path = os.path.join(JOBS_DIR, file)
+            with open(path) as f:
+                job = json.load(f)
 
-        project_path = f"{game_dir}/{template}"
+            if job["status"] != "queued":
+                continue
 
-        subprocess.run([
-            "godot",
-            "--headless",
-            "--path", project_path,
-            "--export-release",
-            "Web",
-            f"{out_dir}/index.html"
-        ], check=True)
+            job_id = job["job_id"]
+            job["status"] = "building"
+            with open(path, "w") as f:
+                json.dump(job, f)
 
-        with open(job_file, "w") as f:
-            json.dump({
-                "status": "done",
-                "url": f"/games/{job_id}/index.html"
-            }, f)
+            # simulate build time
+            time.sleep(10)
 
-    except Exception as e:
-        with open(job_file, "w") as f:
-            json.dump({"status": "error", "error": str(e)}, f)
+            # create playable game
+            game_dir = os.path.join(BUILDS_DIR, job_id)
+            os.makedirs(game_dir, exist_ok=True)
+
+            with open(os.path.join(game_dir, "index.html"), "w") as f:
+                f.write(f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <title>{job['game_name']}</title>
+</head>
+<body style="background:black;color:white;text-align:center">
+  <h1>🎮 {job['game_name']}</h1>
+  <p>This game was built by Playful backend</p>
+  <button onclick="alert('Game logic here')">PLAY</button>
+</body>
+</html>
+""")
+
+            job["status"] = "completed"
+            job["play_url"] = f"/play/{job_id}"
+
+            with open(path, "w") as f:
+                json.dump(job, f)
+
+        time.sleep(3)
+
+if __name__ == "__main__":
+    run_worker()
