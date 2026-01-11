@@ -2,8 +2,7 @@ name: Build Godot Web Game
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -14,11 +13,10 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Godot (NO MONO)
+      - name: Setup Godot (NO C# / NO MONO)
         uses: chickensoft-games/setup-godot@v2
         with:
           version: 4.2.1
-          godot-sharp-release: none
           use-dotnet: false
           include-templates: true
 
