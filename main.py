@@ -1,36 +1,28 @@
 from fastapi import FastAPI
-import requests
-import os
+import uuid, json, os
+from worker import build_game
 
 app = FastAPI()
 
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-OWNER = "YOUR_GITHUB_USERNAME"
-REPO = "builds"
+JOBS_DIR = "jobs"
+os.makedirs(JOBS_DIR, exist_ok=True)
 
-@app.post("/create-game")
-def create_game(game: str, template: str):
-    url = f"https://api.github.com/repos/{OWNER}/{REPO}/dispatches"
+@app.post("/create")
+def create_game(template: str):
+    job_id = str(uuid.uuid4())
+    job_file = f"{JOBS_DIR}/{job_id}.json"
 
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    }
+    with open(job_file, "w") as f:
+        json.dump({"status": "building"}, f)
 
-    payload = {
-        "event_type": "build_game",
-        "client_payload": {
-            "game": game,
-            "template": template
-        }
-    }
+    build_game(job_id, template)
+    return {"job_id": job_id}
 
-    requests.post(url, headers=headers, json=payload)
-    return {"status": "build started"}
+@app.get("/status/{job_id}")
+def status(job_id: str):
+    job_file = f"{JOBS_DIR}/{job_id}.json"
+    if not os.path.exists(job_file):
+        return {"error": "job not found"}
 
-@app.get("/status/{game}")
-def status(game: str):
-    return {
-        "message": "Check GitHub Actions",
-        "url": f"https://github.com/{OWNER}/{REPO}/actions"
-    }
+    with open(job_file) as f:
+        return json.load(f)
