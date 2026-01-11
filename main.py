@@ -1,29 +1,32 @@
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 import uuid, json, os
-from worker import build_game
-from fastapi.staticfiles import StaticFiles
-app.mount("/games", StaticFiles(directory="builds"), name="games")
+
 app = FastAPI()
 
 JOBS_DIR = "jobs"
-os.makedirs(JOBS_DIR, exist_ok=True)
+BUILDS_DIR = "builds"
 
-@app.post("/create")
-def create_game(template: str):
-    job_id = str(uuid.uuid4())
-    job_file = f"{JOBS_DIR}/{job_id}.json"
+@app.post("/create-game")
+def create_game(game_name: str):
+    job_id = "job_" + uuid.uuid4().hex[:8]
 
-    with open(job_file, "w") as f:
-        json.dump({"status": "building"}, f)
+    job = {
+        "job_id": job_id,
+        "game_name": game_name,
+        "status": "queued"
+    }
 
-    build_game(job_id, template)
-    return {"job_id": job_id}
+    with open(f"{JOBS_DIR}/{job_id}.json", "w") as f:
+        json.dump(job, f)
+
+    return job
 
 @app.get("/status/{job_id}")
 def status(job_id: str):
-    job_file = f"{JOBS_DIR}/{job_id}.json"
-    if not os.path.exists(job_file):
-        return {"error": "job not found"}
-
-    with open(job_file) as f:
+    with open(f"{JOBS_DIR}/{job_id}.json") as f:
         return json.load(f)
+
+@app.get("/play/{job_id}")
+def play(job_id: str):
+    return FileResponse(f"{BUILDS_DIR}/{job_id}/index.html")
