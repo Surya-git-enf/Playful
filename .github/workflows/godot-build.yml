@@ -14,11 +14,12 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Godot (STANDARD — NOT MONO)
+      - name: Setup Godot (NO MONO)
         uses: chickensoft-games/setup-godot@v2
         with:
           version: 4.2.1
-          distribution: standard
+          godot-sharp-release: none
+          use-dotnet: false
           include-templates: true
 
       - name: Verify Godot
