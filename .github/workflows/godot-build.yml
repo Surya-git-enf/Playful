@@ -1,0 +1,41 @@
+name: Build Godot Web Game
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_name:
+        description: "Game name"
+        required: true
+        default: "game1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.2.1
+          include-templates: true
+
+      - name: Verify Godot
+        run: godot --version
+
+      - name: Create build folder
+        run: mkdir -p builds/${{ github.event.inputs.game_name }}
+
+      - name: Export Web
+        run: |
+          godot --headless --export-release "Web" builds/${{ github.event.inputs.game_name }}/index.html
+
+      - name: Commit build
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add builds/
+          git commit -m "Build game ${{ github.event.inputs.game_name }}"
+          git push
