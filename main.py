@@ -1,7 +1,8 @@
 from fastapi import FastAPI
 import uuid, json, os
 from worker import build_game
-
+from fastapi.staticfiles import StaticFiles
+app.mount("/games", StaticFiles(directory="builds"), name="games")
 app = FastAPI()
 
 JOBS_DIR = "jobs"
