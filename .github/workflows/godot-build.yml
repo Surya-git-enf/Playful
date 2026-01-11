@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -13,7 +16,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Godot (NO C# / NO MONO)
+      - name: Setup Godot (NO MONO)
         uses: chickensoft-games/setup-godot@v2
         with:
           version: 4.2.1
