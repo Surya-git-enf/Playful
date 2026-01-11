@@ -1,6 +1,6 @@
 import os, json, shutil, subprocess
 
-TEMPLATE_REPO = "https://github.com/surya/game-templates"
+TEMPLATE_REPO = "https://github.com/Surya-git-enf/game-templates"
 BUILDS = "builds"
 JOBS = "jobs"
 
