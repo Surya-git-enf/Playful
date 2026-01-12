@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: 'Game name (folder name under docs/builds) - this may include job id suffix'
+        description: 'Game name (folder name under docs/builds) - may include -jobid suffix'
         required: true
       project_dir:
         description: 'Path to the Godot project inside repo'
@@ -37,49 +37,65 @@ jobs:
           projectDir: ${{ github.event.inputs.project_dir }}
           debugMode: "false"
 
-      - name: Prepare docs/builds folder
+      - name: Prepare destination folder
         run: |
+          set -e
           GAME="${{ github.event.inputs.game_name }}"
-          DEST="docs/builds/${GAME%%-*}"  # strip any -jobid suffix to store under original game_name
+          # strip suffix after first dash to derive original game folder name (if job-id appended)
+          ORIG="${GAME%%-*}"
+          DEST="docs/builds/${ORIG}"
           mkdir -p "${DEST}"
+          echo "DEST=${DEST}"
+          echo "ORIG=${ORIG}"
+          echo "GAME=${GAME}"
           echo "dest=${DEST}" >> $GITHUB_OUTPUT
 
       - name: Copy build output into docs (for GitHub Pages)
         run: |
+          set -e
           BUILD_PATH="${{ steps.build.outputs.build }}"
           if [ -z "$BUILD_PATH" ]; then
             echo "ERROR: build action did not return a path." >&2
             exit 1
           fi
           GAME="${{ github.event.inputs.game_name }}"
-          DEST="docs/builds/${GAME%%-*}"
+          ORIG="${GAME%%-*}"
+          DEST="docs/builds/${ORIG}"
           rm -rf "$DEST"
           mkdir -p "$DEST"
-          cp -a $BUILD_PATH/* "$DEST/" || cp -a $BUILD_PATH "$DEST/" || true
+          # Copy contents — use cp -a if build path is a dir
+          if [ -d "$BUILD_PATH" ]; then
+            cp -a "$BUILD_PATH/"* "$DEST/" || true
+          else
+            cp -a "$BUILD_PATH" "$DEST/" || true
+          fi
           ls -la "$DEST" || true
 
       - name: Commit built files back to repo (docs/builds/<game>)
         run: |
+          set -e
           GAME="${{ github.event.inputs.game_name }}"
-          DEST="docs/builds/${GAME%%-*}"
+          ORIG="${GAME%%-*}"
+          DEST="docs/builds/${ORIG}"
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add "$DEST"
           if git diff --cached --quiet; then
             echo "No changes to commit (build unchanged)."
           else
-            git commit -m "CI: Add/Update built HTML5 for ${GAME%%-*} (workflow #${{ github.run_number }})"
+            git commit -m "CI: Add/Update built HTML5 for ${ORIG} (workflow #${{ github.run_number }})"
             git push origin HEAD:main
           fi
 
       - name: Return final play URL
         id: url
         run: |
-          GAME="${{ github.event.inputs.game_name }}"
           REPO="${{ github.repository }}"
           USER="$(echo $REPO | cut -d'/' -f1)"
           REPO_NAME="$(echo $REPO | cut -d'/' -f2)"
-          PLAY_URL="https://${USER}.github.io/${REPO_NAME}/builds/${GAME%%-*}/index.html"
+          GAME="${{ github.event.inputs.game_name }}"
+          ORIG="${GAME%%-*}"
+          PLAY_URL="https://${USER}.github.io/${REPO_NAME}/builds/${ORIG}/index.html"
           echo "play_url=${PLAY_URL}" >> $GITHUB_OUTPUT
 
       - name: Output result
