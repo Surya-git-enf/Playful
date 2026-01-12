@@ -1,12 +1,7 @@
 name: Build Godot Web Game
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -16,27 +11,27 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Godot (NO MONO)
+      - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
         with:
           version: 4.2.1
-          use-dotnet: false
           include-templates: true
-
-      - name: Verify Godot
-        run: godot --version
+          use-dotnet: false
 
       - name: Create build folder
-        run: mkdir -p builds/game1
+        run: |
+          mkdir -p builds/job_${{ github.run_id }}
 
       - name: Export Web
         run: |
-          godot --headless --export-release "Web" builds/game1/index.html
+          godot --headless \
+            --export-release "Web" \
+            builds/job_${{ github.run_id }}/index.html
 
       - name: Commit build
         run: |
           git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add builds
-          git commit -m "Auto web build" || echo "No changes"
+          git config user.email "github-actions@github.com"
+          git add builds/
+          git commit -m "Add web build ${{ github.run_id }}"
           git push
