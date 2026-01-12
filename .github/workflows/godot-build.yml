@@ -1,69 +1,109 @@
-name: Build Godot Web Game
+name: Build Godot Web Game (HTML5) & Publish to Pages
 
+# Triggerable from API or manual run
 on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: "Game name (folder name)"
+        description: 'Game name (folder name under builds)'
         required: true
-        default: "run"
-      template:
-        description: "Template name"
+        default: 'game1'
+      project_dir:
+        description: 'Path to the Godot project inside repo (project.godot, export_presets.cfg)'
         required: true
-        default: "runner"
+        default: 'games/runner'
+      preset:
+        description: 'Export preset name (must match export_presets.cfg)'
+        required: true
+        default: 'Web'
+
+permissions:
+  contents: write   # needed to commit built files back to repo/docs
 
 jobs:
-  build:
+  build-and-publish:
     runs-on: ubuntu-latest
-
     steps:
-      # 1️⃣ Checkout repo
-      - name: Checkout repository
+      - name: Checkout code (with write token)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: true
 
-      # 2️⃣ Install dependencies
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip wget
+      - name: Set up Python (needed for some helpers)
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-      # 3️⃣ Download NON-MONO Godot (IMPORTANT)
-      - name: Download Godot Engine (non-mono)
-        run: |
-          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
-          unzip Godot_v4.2.1-stable_linux.x86_64.zip
-          chmod +x Godot_v4.2.1-stable_linux.x86_64
-          sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
+      # Use a well-known Godot build action that runs export (HTML5)
+      # This is a stable action: felix-schindler/build-godot-action
+      - name: Build Godot project -> HTML5 (preset)
+        id: build
+        uses: felix-schindler/build-godot-action@v2.0.0
+        with:
+          name: ${{ github.run_id }}-${{ github.run_number }}-${{ github.sha }}   # unique name
+          preset: ${{ github.event.inputs.preset || github.inputs.preset || 'Web' }}
+          projectDir: ${{ github.event.inputs.project_dir || github.inputs.project_dir || 'games/runner' }}
+          debugMode: "false"  # set true if you need debug wasm (not recommended)
+      # The action exposes outputs: steps.build.outputs.build -> path to generated build
 
-      # 4️⃣ Download export templates
-      - name: Install Godot export templates
+      - name: Prepare docs/builds folder
         run: |
-          mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
-          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz
-          unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.2.1.stable
-          mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
-          rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
-          rm Godot_v4.2.1-stable_export_templates.tpz
+          GAME="${{ github.event.inputs.game_name || github.inputs.game_name || 'game1' }}"
+          DEST="docs/builds/${GAME}"
+          mkdir -p "${DEST}"
+          echo "dest=${DEST}" >> $GITHUB_OUTPUT
 
-      # 5️⃣ Prepare build folder
-      - name: Prepare build directory
+      - name: Copy build output into docs (for GitHub Pages)
         run: |
-          mkdir -p builds/${{ github.event.inputs.game_name }}
+          # build output path returned by action (relative workspace)
+          BUILD_PATH="${{ steps.build.outputs.build }}"
 
-      # 6️⃣ Export Godot Web build
-      - name: Export Web build
-        run: |
-          godot \
-            --headless \
-            --path games/${{ github.event.inputs.template }} \
-            --export-release "Web" \
-            builds/${{ github.event.inputs.game_name }}/index.html
+          echo "Build path: $BUILD_PATH"
+          if [ -z "$BUILD_PATH" ]; then
+            echo "ERROR: build action did not return a path. Check earlier steps." >&2
+            exit 1
+          fi
 
-      # 7️⃣ Commit build output
-      - name: Commit build files
+          GAME="${{ github.event.inputs.game_name || github.inputs.game_name || 'game1' }}"
+          DEST="docs/builds/${GAME}"
+
+          # remove any previous content
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+
+          # the build action might produce a folder (e.g. builds/<name>/) - copy everything
+          cp -a $BUILD_PATH/* "$DEST/" || cp -a $BUILD_PATH "$DEST/" || true
+
+          ls -la "docs/builds/${GAME}" || true
+
+      - name: Commit built files back to repo (docs/builds/<game>)
         run: |
+          GAME="${{ github.event.inputs.game_name || github.inputs.game_name || 'game1' }}"
           git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add builds
-          git commit -m "Build game: ${{ github.event.inputs.game_name }}" || echo "Nothing to commit"
-          git push
+          git config user.email "actions@github.com"
+
+          # Add and commit doc changes
+          git add docs/builds/"${GAME}"
+          # If nothing changed, exit gracefully
+          if git diff --cached --quiet; then
+            echo "No changes to commit (build unchanged)."
+          else
+            git commit -m "CI: Add/Update built HTML5 for ${GAME} (from workflow #${{ github.run_number }})"
+            git push origin HEAD:main
+          fi
+
+      - name: Return final play URL
+        id: url
+        run: |
+          GAME="${{ github.event.inputs.game_name || github.inputs.game_name || 'game1' }}"
+          REPO="${{ github.repository }}"  # user/repo
+          USER="$(echo $REPO | cut -d'/' -f1)"
+          REPO_NAME="$(echo $REPO | cut -d'/' -f2)"
+          PLAY_URL="https://${USER}.github.io/${REPO_NAME}/builds/${GAME}/index.html"
+          echo "play_url=${PLAY_URL}" >> $GITHUB_OUTPUT
+
+      - name: Output result
+        run: |
+          echo "Build complete. Playable URL: ${{ steps.url.outputs.play_url }}"
