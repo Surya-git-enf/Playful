@@ -1,6 +1,4 @@
 fastapi
-uvicorn
-gitpython
-redis
+uvicorn[standard]
 requests
-pydantic
+python-multipart
