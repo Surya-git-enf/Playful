@@ -3,3 +3,4 @@ uvicorn
 gitpython
 redis
 requests
+pydantic
