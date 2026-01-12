@@ -1,104 +1,161 @@
+# dispatch_worker.py
 import os
 import json
 import time
 import requests
-import shutil
+from datetime import datetime, timezone
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")   # set in Render / server
+REPO = "Surya-git-enf/Playful"                  # owner/repo
+WORKFLOW_FILENAME = "godot-build.yml"           # filename in .github/workflows/
+POLL_SECONDS = 3
+POLL_TIMEOUT = 300  # seconds to wait for workflow to start/finish
 
 JOBS_DIR = "jobs"
-BUILDS_DIR = "builds"
-DOCS_DIR = "docs/play"
 
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-REPO = "Surya-git-enf/Playful"
-WORKFLOW = "godot-build.yml"
-
-os.makedirs(JOBS_DIR, exist_ok=True)
-os.makedirs(BUILDS_DIR, exist_ok=True)
-os.makedirs(DOCS_DIR, exist_ok=True)
-
-
-def dispatch_github(job_id):
-    if not GITHUB_TOKEN:
-        print("⚠️ No GitHub token, skipping dispatch")
-        return
-
-    url = f"https://api.github.com/repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches"
-    headers = {
+def github_headers():
+    return {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json"
     }
-    data = {
+
+def dispatch_workflow(job):
+    """Call workflow_dispatch to trigger the build.
+       Returns True if API returned 204.
+    """
+    url = f"https://api.github.com/repos/{REPO}/actions/workflows/{WORKFLOW_FILENAME}/dispatches"
+    inputs = {
         "ref": "main",
         "inputs": {
-            "job_id": job_id
+            "game_name": job["game_name"],
+            "project_dir": job.get("project_dir", "games/runner"),
+            "preset": job.get("preset", "Web")
         }
     }
+    r = requests.post(url, json=inputs, headers=github_headers())
+    print("dispatch status:", r.status_code, r.text)
+    return r.status_code == 204
 
-    r = requests.post(url, headers=headers, json=data)
-    print("🚀 GitHub dispatch:", r.status_code)
+def find_recent_run(job):
+    """List workflow runs and try to find the one we just triggered for this job.
+       Strategy: list runs for the workflow, filter by created_at within last minute and by actor.
+    """
+    url = f"https://api.github.com/repos/{REPO}/actions/workflows/{WORKFLOW_FILENAME}/runs"
+    r = requests.get(url, headers=github_headers(), params={"per_page": 10})
+    if r.status_code != 200:
+        print("list runs failed", r.status_code, r.text)
+        return None
+    runs = r.json().get("workflow_runs", [])
+    # Try to find a run that was created recently (within 2 minutes)
+    now = datetime.now(timezone.utc)
+    for run in runs:
+        created_at = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
+        age = (now - created_at).total_seconds()
+        if age < 120:
+            # extra check: run head_sha or head_branch may be used; we accept recent run
+            return run
+    return None
 
-
-def run_worker():
+def poll_run_until_complete(run_id, timeout=POLL_TIMEOUT):
+    url = f"https://api.github.com/repos/{REPO}/actions/runs/{run_id}"
+    start = time.time()
     while True:
-        for file in os.listdir(JOBS_DIR):
-            if not file.endswith(".json"):
-                continue
+        r = requests.get(url, headers=github_headers())
+        if r.status_code != 200:
+            print("poll run failed", r.status_code, r.text)
+            return None
+        data = r.json()
+        status = data.get("status")
+        conclusion = data.get("conclusion")
+        print("run status:", status, "conclusion:", conclusion)
+        if status == "completed":
+            return data
+        if time.time() - start > timeout:
+            print("timeout waiting for run to complete")
+            return None
+        time.sleep(POLL_SECONDS)
 
-            path = os.path.join(JOBS_DIR, file)
-            with open(path) as f:
-                job = json.load(f)
+def load_job(path):
+    with open(path, "r") as f:
+        return json.load(f)
 
-            if job["status"] != "queued":
-                continue
+def save_job(path, job):
+    with open(path, "w") as f:
+        json.dump(job, f, indent=2)
 
-            job_id = job["job_id"]
-            print("⚙️ Building", job_id)
+def process_job_file(path):
+    job = load_job(path)
+    if job.get("status") != "queued":
+        return
 
-            job["status"] = "building"
-            with open(path, "w") as f:
-                json.dump(job, f)
+    job["status"] = "dispatching"
+    save_job(path, job)
 
-            # simulate build
-            time.sleep(5)
+    if not GITHUB_TOKEN:
+        job["status"] = "failed"
+        job["error"] = "Missing GITHUB_TOKEN"
+        save_job(path, job)
+        return
 
-            # build output
-            build_dir = os.path.join(BUILDS_DIR, job_id)
-            os.makedirs(build_dir, exist_ok=True)
+    if not dispatch_workflow(job):
+        job["status"] = "failed"
+        job["error"] = "workflow_dispatch failed"
+        save_job(path, job)
+        return
 
-            index_html = os.path.join(build_dir, "index.html")
-            with open(index_html, "w") as f:
-                f.write(f"""
-<!DOCTYPE html>
-<html>
-<head>
-  <title>{job['game_name']}</title>
-</head>
-<body style="background:black;color:white;text-align:center">
-  <h1>🎮 {job['game_name']}</h1>
-  <p>Built by Playful</p>
-  <button onclick="alert('Game logic here')">PLAY</button>
-</body>
-</html>
-""")
+    # mark dispatched; we will attempt to find the run id
+    job["dispatched"] = True
+    save_job(path, job)
 
-            # 🚚 COPY TO GITHUB PAGES
-            pages_dir = os.path.join(DOCS_DIR, job_id)
-            os.makedirs(pages_dir, exist_ok=True)
-            shutil.copy(index_html, pages_dir)
+    # Give GitHub a few seconds then try to find the new run
+    run = None
+    start = time.time()
+    while (time.time() - start) < 60:
+        run = find_recent_run(job)
+        if run:
+            break
+        time.sleep(2)
 
-            # mark complete
-            job["status"] = "completed"
-            job["dispatched"] = True
-            job["play_url"] = f"/play/{job_id}"
+    if not run:
+        job["status"] = "running"
+        job["workflow_run_id"] = None
+        save_job(path, job)
+        # we can continue polling later via another process; return now
+        return
 
-            with open(path, "w") as f:
-                json.dump(job, f)
+    run_id = run["id"]
+    job["workflow_run_id"] = run_id
+    job["status"] = "running"
+    save_job(path, job)
 
-            # 🚀 trigger GitHub
-            dispatch_github(job_id)
+    # wait for completion
+    run_data = poll_run_until_complete(run_id)
+    if not run_data:
+        job["status"] = "failed"
+        job["error"] = "Workflow run did not complete in time"
+        save_job(path, job)
+        return
 
-        time.sleep(3)
+    if run_data.get("conclusion") == "success":
+        job["status"] = "completed"
+        # compute output URL (your workflow pushes to docs/builds/<game>)
+        user, repo = REPO.split("/")
+        job["output_url"] = f"https://{user}.github.io/{repo}/builds/{job['game_name']}/index.html"
+        job["play_url"] = f"/play/{job['job_id']}"
+        job["error"] = ""
+    else:
+        job["status"] = "failed"
+        job["error"] = f"workflow concluded: {run_data.get('conclusion')}"
 
+    save_job(path, job)
 
 if __name__ == "__main__":
-    run_worker()
+    # single-pass worker: scan jobs folder and process queued jobs
+    for filename in os.listdir(JOBS_DIR):
+        if not filename.endswith(".json"):
+            continue
+        p = os.path.join(JOBS_DIR, filename)
+        try:
+            process_job_file(p)
+        except Exception as e:
+            print("job processing error", e)
