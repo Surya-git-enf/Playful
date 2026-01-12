@@ -1,37 +1,49 @@
 name: Build Godot Web Game
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      game_name:
+        description: 'name of the game to build'
+        required: false
+        default: ''
+      template:
+        description: 'template name'
+        required: false
+        default: ''
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Godot
-        uses: chickensoft-games/setup-godot@v2
+      - name: Setup Godot (with templates)
+        uses: chickensoft-games/setup-godot@v1
         with:
           version: 4.2.1
           include-templates: true
-          use-dotnet: false
 
-      - name: Create build folder
-        run: |
-          mkdir -p builds/job_${{ github.run_id }}
+      - name: Create builds directory
+        run: mkdir -p builds/${{ github.event.inputs.game_name || 'game' }}
 
       - name: Export Web
         run: |
-          godot --headless \
-            --export-release "Web" \
-            builds/job_${{ github.run_id }}/index.html
+          # Export the project to builds/<game_name>/index.html
+          export_name="${{ github.event.inputs.game_name || 'game' }}"
+          mkdir -p builds/"$export_name"
+          godot --headless --export-release "Web" builds/"$export_name"/index.html
 
-      - name: Commit build
+      - name: Commit builds (attempt)
+        env:
+          GIT_AUTHOR_NAME: github-actions
+          GIT_AUTHOR_EMAIL: actions@github.com
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add builds/
-          git commit -m "Add web build ${{ github.run_id }}"
-          git push
+          git config user.name "$GIT_AUTHOR_NAME"
+          git config user.email "$GIT_AUTHOR_EMAIL"
+          git add builds || true
+          git commit -m "Add/Update build for ${{ github.event.inputs.game_name }}" || echo "No changes to commit"
+          # push will only succeed if the action has push permissions via a PAT.
+          git push || echo "Push failed - ensure PAT with repo:status and repo scope is configured"
