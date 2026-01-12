@@ -1,49 +1,69 @@
 name: Build Godot Web Game
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
     inputs:
       game_name:
-        description: 'name of the game to build'
-        required: false
-        default: ''
+        description: "Game name (folder name)"
+        required: true
+        default: "run"
       template:
-        description: 'template name'
-        required: false
-        default: ''
+        description: "Template name"
+        required: true
+        default: "runner"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      # 1️⃣ Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup Godot (with templates)
-        uses: chickensoft-games/setup-godot@v1
-        with:
-          version: 4.2.1
-          include-templates: true
-
-      - name: Create builds directory
-        run: mkdir -p builds/${{ github.event.inputs.game_name || 'game' }}
-
-      - name: Export Web
+      # 2️⃣ Install dependencies
+      - name: Install system dependencies
         run: |
-          # Export the project to builds/<game_name>/index.html
-          export_name="${{ github.event.inputs.game_name || 'game' }}"
-          mkdir -p builds/"$export_name"
-          godot --headless --export-release "Web" builds/"$export_name"/index.html
+          sudo apt-get update
+          sudo apt-get install -y unzip wget
 
-      - name: Commit builds (attempt)
-        env:
-          GIT_AUTHOR_NAME: github-actions
-          GIT_AUTHOR_EMAIL: actions@github.com
+      # 3️⃣ Download NON-MONO Godot (IMPORTANT)
+      - name: Download Godot Engine (non-mono)
         run: |
-          git config user.name "$GIT_AUTHOR_NAME"
-          git config user.email "$GIT_AUTHOR_EMAIL"
-          git add builds || true
-          git commit -m "Add/Update build for ${{ github.event.inputs.game_name }}" || echo "No changes to commit"
-          # push will only succeed if the action has push permissions via a PAT.
-          git push || echo "Push failed - ensure PAT with repo:status and repo scope is configured"
+          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
+          unzip Godot_v4.2.1-stable_linux.x86_64.zip
+          chmod +x Godot_v4.2.1-stable_linux.x86_64
+          sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
+
+      # 4️⃣ Download export templates
+      - name: Install Godot export templates
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
+          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz
+          unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.2.1.stable
+          mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
+          rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
+          rm Godot_v4.2.1-stable_export_templates.tpz
+
+      # 5️⃣ Prepare build folder
+      - name: Prepare build directory
+        run: |
+          mkdir -p builds/${{ github.event.inputs.game_name }}
+
+      # 6️⃣ Export Godot Web build
+      - name: Export Web build
+        run: |
+          godot \
+            --headless \
+            --path games/${{ github.event.inputs.template }} \
+            --export-release "Web" \
+            builds/${{ github.event.inputs.game_name }}/index.html
+
+      # 7️⃣ Commit build output
+      - name: Commit build files
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add builds
+          git commit -m "Build game: ${{ github.event.inputs.game_name }}" || echo "Nothing to commit"
+          git push
