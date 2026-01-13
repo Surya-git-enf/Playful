@@ -1,102 +1,130 @@
-name: Build Godot Web Game (HTML5) & Publish to Pages
+name: Build Godot Web (triggered by repo dispatch)
 
 on:
-  workflow_dispatch:
-    inputs:
-      game_name:
-        description: 'Game name (folder name under docs/builds) - may include -jobid suffix'
-        required: true
-      project_dir:
-        description: 'Path to the Godot project inside repo'
-        required: true
-        default: 'games/runner'
-      preset:
-        description: 'Export preset name (must match export_presets.cfg)'
-        required: true
-        default: 'Web'
-
-permissions:
-  contents: write
+  repository_dispatch:
+    types: [ build_game ]
 
 jobs:
-  build-and-publish:
+  build_web:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code (with write token)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: true
 
-      - name: Build Godot project -> HTML5 (preset)
-        id: build
-        uses: felix-schindler/build-godot-action@v2.0.0
-        with:
-          name: ${{ github.run_id }}-${{ github.run_number }}-${{ github.sha }}
-          preset: ${{ github.event.inputs.preset }}
-          projectDir: ${{ github.event.inputs.project_dir }}
-          debugMode: "false"
-
-      - name: Prepare destination folder
+      - name: Parse payload (action input)
+        id: payload
         run: |
-          set -e
-          GAME="${{ github.event.inputs.game_name }}"
-          # strip suffix after first dash to derive original game folder name (if job-id appended)
-          ORIG="${GAME%%-*}"
-          DEST="docs/builds/${ORIG}"
-          mkdir -p "${DEST}"
-          echo "DEST=${DEST}"
-          echo "ORIG=${ORIG}"
-          echo "GAME=${GAME}"
-          echo "dest=${DEST}" >> $GITHUB_OUTPUT
+          echo "payload=$GITHUB_EVENT_PATH"
+          python3 - <<'PY'
+import json,os
+p = json.load(open(os.environ['GITHUB_EVENT_PATH']))
+cp = p.get('client_payload', {})
+print("::set-output name=GAME_ID::"+str(cp.get('game_id','')))
+print("::set-output name=CALLBACK_URL::"+str(cp.get('callback_upload_url','')))
+print("::set-output name=TEMPLATE::"+str(cp.get('template','')))
+print("::set-output name=BUILD_TYPE::"+str(cp.get('build_type','')))
+PY
+        env:
+          # GITHUB_EVENT_PATH is available automatically
+          PYTHONUNBUFFERED: 1
 
-      - name: Copy build output into docs (for GitHub Pages)
+      - name: Show parsed vars (for debug)
         run: |
-          set -e
-          BUILD_PATH="${{ steps.build.outputs.build }}"
-          if [ -z "$BUILD_PATH" ]; then
-            echo "ERROR: build action did not return a path." >&2
+          echo "Event payload file: $GITHUB_EVENT_PATH"
+          jq '.' $GITHUB_EVENT_PATH || true
+
+      - name: Download Godot headless (NON-MONO) - from secret URL
+        env:
+          GODOT_DOWNLOAD_URL: ${{ secrets.GODOT_DOWNLOAD_URL }}
+        run: |
+          if [ -z "$GODOT_DOWNLOAD_URL" ]; then
+            echo "Set repository secret GODOT_DOWNLOAD_URL to a non-mono Godot headless linux zip URL"
             exit 1
           fi
-          GAME="${{ github.event.inputs.game_name }}"
-          ORIG="${GAME%%-*}"
-          DEST="docs/builds/${ORIG}"
-          rm -rf "$DEST"
-          mkdir -p "$DEST"
-          # Copy contents — use cp -a if build path is a dir
-          if [ -d "$BUILD_PATH" ]; then
-            cp -a "$BUILD_PATH/"* "$DEST/" || true
-          else
-            cp -a "$BUILD_PATH" "$DEST/" || true
-          fi
-          ls -la "$DEST" || true
+          wget -q "$GODOT_DOWNLOAD_URL" -O godot.zip
+          unzip -q godot.zip -d godot_bin
+          # try to find binary
+          ls -la godot_bin
 
-      - name: Commit built files back to repo (docs/builds/<game>)
+      - name: Make Godot binary executable
         run: |
-          set -e
-          GAME="${{ github.event.inputs.game_name }}"
-          ORIG="${GAME%%-*}"
-          DEST="docs/builds/${ORIG}"
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add "$DEST"
-          if git diff --cached --quiet; then
-            echo "No changes to commit (build unchanged)."
-          else
-            git commit -m "CI: Add/Update built HTML5 for ${ORIG} (workflow #${{ github.run_number }})"
-            git push origin HEAD:main
+          # find the executable inside godot_bin (simple heuristic)
+          BIN=$(find godot_bin -maxdepth 2 -type f -executable | head -n1 || true)
+          if [ -z "$BIN" ]; then
+            # try common filename patterns
+            BIN=$(find godot_bin -type f -name "Godot_*" | head -n1 || true)
+          fi
+          if [ -z "$BIN" ]; then
+            echo "Godot binary not found after unzip. Check GODOT_DOWNLOAD_URL and archive contents."
+            ls -la godot_bin
+            exit 1
+          fi
+          echo "Using godot binary: $BIN"
+          chmod +x "$BIN"
+          echo "::set-output name=GODOT_BIN::$BIN"
+
+      - name: Prepare config (inject client payload)
+        run: |
+          python3 - <<'PY'
+import json,os
+ev = json.load(open(os.environ['GITHUB_EVENT_PATH']))
+cp = ev.get('client_payload', {})
+game_id = cp.get('game_id','game_unknown')
+# save payload for inspection / can be used to write config.json into project
+os.makedirs('build_meta', exist_ok=True)
+with open('build_meta/payload.json','w') as f:
+    json.dump(cp, f)
+print("Saved payload for game:",game_id)
+PY
+
+      - name: Ensure export_presets.cfg exists
+        run: |
+          if [ ! -f export_presets.cfg ]; then
+            echo "export_presets.cfg not found in repo root. Godot CLI export relies on a preset named 'HTML5'. Add export_presets.cfg to your project."
+            ls -la
+            exit 1
           fi
 
-      - name: Return final play URL
-        id: url
+      - name: Run Godot export (HTML5)
+        id: export
         run: |
-          REPO="${{ github.repository }}"
-          USER="$(echo $REPO | cut -d'/' -f1)"
-          REPO_NAME="$(echo $REPO | cut -d'/' -f2)"
-          GAME="${{ github.event.inputs.game_name }}"
-          ORIG="${GAME%%-*}"
-          PLAY_URL="https://${USER}.github.io/${REPO_NAME}/builds/${ORIG}/index.html"
-          echo "play_url=${PLAY_URL}" >> $GITHUB_OUTPUT
+          # choose the binary path
+          BIN=$(find godot_bin -type f -executable | head -n1)
+          if [ -z "$BIN" ]; then
+            echo "Godot binary not found. Exiting."
+            exit 1
+          fi
+          mkdir -p out_web
+          echo "Exporting HTML5 using: $BIN"
+          # This uses the export preset named "HTML5". Make sure it's present.
+          "$BIN" --headless --export "HTML5" out_web || ( echo "Godot export failed"; exit 2 )
+          ls -la out_web
 
-      - name: Output result
-        run: echo "Build complete. Playable URL: ${{ steps.url.outputs.play_url }}"
+      - name: Zip out_web
+        run: |
+          cd out_web
+          zip -r ../web_build.zip . || true
+          cd ..
+
+      - name: Upload built zip to backend
+        env:
+          CALLBACK_URL: ${{ toJson(fromJSON(needs?)) || '' }}
+          UPLOAD_SECRET: ${{ secrets.UPLOAD_SECRET }}
+        run: |
+          if [ -z "${{ secrets.UPLOAD_SECRET }}" ]; then
+            echo "UPLOAD_SECRET must be set in repository secrets"
+            exit 1
+          fi
+          # read callback URL from event payload
+          CALLBACK=$(jq -r '.client_payload.callback_upload_url' "$GITHUB_EVENT_PATH")
+          GAME_ID=$(jq -r '.client_payload.game_id' "$GITHUB_EVENT_PATH")
+          if [ -z "$CALLBACK" ] || [ "$CALLBACK" = "null" ]; then
+            echo "Callback upload URL not found in payload"
+            exit 1
+          fi
+          echo "Uploading build for game: $GAME_ID to $CALLBACK"
+          curl -v -X POST "$CALLBACK" \
+            -H "X-Upload-Secret: ${{ secrets.UPLOAD_SECRET }}" \
+            -F "game_id=$GAME_ID" \
+            -F "file=@web_build.zip" \
+            --fail
