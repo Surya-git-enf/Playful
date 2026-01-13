@@ -1,75 +1,114 @@
-name: Godot HTML5 Build
+name: Godot HTML5 Build (runner)
 
 on:
   repository_dispatch:
-    types: [build_game]
+    types: [ build_game ]
 
 jobs:
-  build:
+  build_html5:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install system deps
+      - name: Install utilities
         run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip zip wget python3 curl
+          sudo apt-get update -y
+          sudo apt-get install -y unzip zip wget
 
-      - name: Set payload vars
+      - name: Setup variables
         run: |
           echo "GAME_ID=${{ github.event.client_payload.game_id }}" >> $GITHUB_ENV
           echo "CALLBACK_URL=${{ github.event.client_payload.callback_upload_url }}" >> $GITHUB_ENV
 
-      - name: Download Godot headless (4.2.1)
+      - name: Download Godot headless (NON-MONO)
+        # Option A: use secret GODOT_DOWNLOAD_URL; Option B: default to hardcoded working URL
         run: |
-          wget https://downloads.tuxfamily.org/godotengine/4.2.1/Godot_v4.2.1-stable_linux.headless.64.zip -O godot.zip
-          unzip godot.zip
-          chmod +x Godot_v4.2.1-stable_linux.headless.64
-          sudo mv Godot_v4.2.1-stable_linux.headless.64 /usr/local/bin/godot
+          URL=${{ secrets.GODOT_DOWNLOAD_URL || 'https://downloads.tuxfamily.org/godotengine/4.2.1/Godot_v4.2.1-stable_linux.headless.64.zip' }}
+          echo "Using Godot download URL: $URL"
+          wget -q "$URL" -O godot.zip
+          unzip -q godot.zip
+          # find the binary (name differs per archive)
+          BIN=$(find . -maxdepth 2 -type f -perm -111 -name "Godot*" -print -quit || true)
+          if [ -z "$BIN" ]; then
+            # Try common filename
+            BIN=$(ls | grep -E "Godot_v.*linux.*headless.*" | head -n1 || true)
+          fi
+          if [ -z "$BIN" ]; then
+            echo "Godot binary not found in archive. Listing files:"
+            ls -la
+            exit 1
+          fi
+          chmod +x "$BIN"
+          sudo mv "$BIN" /usr/local/bin/godot
           godot --version
 
-      - name: Install export templates
+      - name: Install Godot export templates (HTML5)
         run: |
-          mkdir -p ~/.local/share/godot
-          wget https://downloads.tuxfamily.org/godotengine/4.2.1/Godot_v4.2.1-stable_export_templates.tpz -O templates.tpz
-          unzip templates.tpz -d ~/.local/share/godot
-          ls ~/.local/share/godot
+          # XDG_DATA_HOME tells where Godot will find templates; set to default location
+          export XDG_DATA_HOME="${HOME}/.local/share"
+          mkdir -p "$XDG_DATA_HOME/godot"
+          # Use secret TEMPLATE_TPZ_URL if provided, otherwise use official 4.2.1 templates
+          TPL_URL=${{ secrets.GODOT_TEMPLATES_URL || 'https://downloads.tuxfamily.org/godotengine/4.2.1/Godot_v4.2.1-stable_export_templates.tpz' }}
+          wget -q "$TPL_URL" -O templates.tpz
+          unzip -q templates.tpz -d "$XDG_DATA_HOME/godot"
+          echo "Export templates installed to $XDG_DATA_HOME/godot"
+          ls -la "$XDG_DATA_HOME/godot" || true
 
-      - name: Prepare project
+      - name: Prepare project copy + inject config
         run: |
+          # copy project to a clean build dir
           rm -rf build_work
-          mkdir build_work
+          mkdir -p build_work
           cp -r games/runner/* build_work/
+          # write the client payload config to game_config.json in project root
+          python3 - <<'PY'
+          import json,os
+          ev = json.load(open(os.environ['GITHUB_EVENT_PATH']))
+          cp = ev.get('client_payload', {})
+          cfg = cp.get('config', {})
+          with open('build_work/game_config.json','w') as f:
+          json.dump(cfg, f)
+          print("Wrote build_work/game_config.json")
+          PY
+           ls -la build_work
 
-          python3 - <<EOF
-import json, os
-event = json.load(open(os.environ["GITHUB_EVENT_PATH"]))
-cfg = event["client_payload"].get("config", {})
-with open("build_work/game_config.json","w") as f:
-    json.dump(cfg, f)
-print("game_config.json written")
-EOF
-
-      - name: Export HTML5
+      - name: Run Godot export (HTML5)
         run: |
-          mkdir -p out
-          godot --headless --path build_work --export-release "Web" out
-          ls out
+          set -e
+          GAME_ID="${GAME_ID}"
+          # Working directory is repo root; export uses --path build_work
+          mkdir -p out_builds
+          echo "Exporting HTML5 (project path: build_work) ..."
+          godot --headless --path build_work --export-release "Web" out_builds/${GAME_ID} || (echo "Godot export failed"; exit 4)
+          echo "Export step completed. Contents of out_builds/${GAME_ID}:"
+          ls -la out_builds/${GAME_ID} || true
 
-      - name: Zip build
+      - name: Package output
         run: |
-          cd out
-          zip -r ../${GAME_ID}.zip .
-          cd ..
-          ls -lh ${GAME_ID}.zip
+          GAME_ID="${GAME_ID}"
+          cd out_builds/${GAME_ID}
+          zip -r ../../${GAME_ID}.zip . || true
+          cd ../../
+          ls -la ${GAME_ID}.zip
 
-      - name: Upload to backend
+      - name: Upload build zip to backend
         env:
           UPLOAD_SECRET: ${{ secrets.UPLOAD_SECRET }}
         run: |
-          curl -X POST "$CALLBACK_URL" \
-            -H "X-Upload-Secret: $UPLOAD_SECRET" \
-            -F "game_id=$GAME_ID" \
-            -F "file=@${GAME_ID}.zip"
+          GAME_ID="${GAME_ID}"
+          CALLBACK="${CALLBACK_URL}"
+          if [ -z "$CALLBACK" ]; then
+            echo "Callback URL missing in client payload"
+            exit 1
+          fi
+          echo "Uploading to $CALLBACK"
+          curl -v -X POST "$CALLBACK" \
+            -H "X-Upload-Secret: ${UPLOAD_SECRET}" \
+            -F "game_id=${GAME_ID}" \
+            -F "file=@${GAME_ID}.zip" \
+            --fail
