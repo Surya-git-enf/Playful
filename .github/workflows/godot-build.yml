@@ -1,20 +1,12 @@
 name: Build Godot Web Game
 
 on:
-  workflow_dispatch:
-    inputs:
-      game_name:
-        description: "Game name"
-        required: true
-        default: "run"
-      template:
-        description: "Template folder"
-        required: true
-        default: "runner"
+  repository_dispatch:
+    types: [build_game]
 
-      jobs:
-      build:
-         runs-on: ubuntu-latest
+jobs:
+  build:
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
@@ -40,13 +32,16 @@ on:
           unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot
           rm Godot_v4.2.1-stable_export_templates.tpz
 
+      - name: Prepare build folder
+        run: |
+          mkdir -p builds/${{ github.event.client_payload.game_id }}
+
       - name: Export Web Build
         run: |
-          mkdir -p builds/${{ github.event.inputs.game_name }}
           godot --headless \
-            --path games/${{ github.event.inputs.template }} \
-            --export-release "Web" builds/${{ github.event.inputs.game_name }}
+            --path games/${{ github.event.client_payload.template }} \
+            --export-release "Web" builds/${{ github.event.client_payload.game_id }}
 
-      - name: List Build
+      - name: List build output
         run: |
-          ls -lh builds/${{ github.event.inputs.game_name }}
+          ls -lh builds/${{ github.event.client_payload.game_id }}
