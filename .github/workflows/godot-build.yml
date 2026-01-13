@@ -1,47 +1,75 @@
 name: Build Godot Web Game
 
 on:
-  repository_dispatch:
-    types: [build_game]
+  workflow_dispatch:
+    inputs:
+      game_name:
+        description: "Output build folder name"
+        required: true
+        default: "runner-build"
+      template:
+        description: "Game template folder inside /games"
+        required: true
+        default: "runner"
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      # 1️⃣ Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      # 2️⃣ Install system dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip wget
+          sudo apt-get install -y wget unzip
 
-      - name: Download Godot Headless
+      # 3️⃣ Download Godot (NON-MONO) from GitHub
+      - name: Download Godot Engine
         run: |
-          wget https://downloads.tuxfamily.org/godotengine/4.2.1/Godot_v4.2.1-stable_linux.headless.64.zip
-          unzip Godot_v4.2.1-stable_linux.headless.64.zip
-          chmod +x Godot_v4.2.1-stable_linux.headless.64
-          sudo mv Godot_v4.2.1-stable_linux.headless.64 /usr/local/bin/godot
+          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
+          unzip Godot_v4.2.1-stable_linux.x86_64.zip
+          chmod +x Godot_v4.2.1-stable_linux.x86_64
+          sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
           godot --version
 
-      - name: Install Export Templates
+      # 4️⃣ Install export templates
+      - name: Install Godot export templates
         run: |
-          mkdir -p ~/.local/share/godot
-          wget https://downloads.tuxfamily.org/godotengine/4.2.1/Godot_v4.2.1-stable_export_templates.tpz
-          unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot
-          rm Godot_v4.2.1-stable_export_templates.tpz
+          mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
+          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz
+          unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.2.1.stable
+          mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
+          rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
+          ls ~/.local/share/godot/export_templates/4.2.1.stable
 
-      - name: Prepare build folder
+      # 5️⃣ Prepare build directory
+      - name: Prepare build directory
         run: |
-          mkdir -p builds/${{ github.event.client_payload.game_id }}
+          mkdir -p builds/${{ inputs.game_name }}
 
-      - name: Export Web Build
+      # 6️⃣ Export Web build
+      - name: Export Godot Web build
         run: |
-          godot --headless \
-            --path games/${{ github.event.client_payload.template }} \
-            --export-release "Web" builds/${{ github.event.client_payload.game_id }}
+          godot \
+            --headless \
+            --path games/${{ inputs.template }} \
+            --export-release "Web" \
+            builds/${{ inputs.game_name }}/index.html
 
-      - name: List build output
+      # 7️⃣ Verify build output
+      - name: Verify build
         run: |
-          ls -lh builds/${{ github.event.client_payload.game_id }}
+          ls -R builds/${{ inputs.game_name }}
+
+      # 8️⃣ Commit build output (optional but useful)
+      - name: Commit build files
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add builds
+          git commit -m "Build Web game: ${{ inputs.game_name }}" || echo "Nothing to commit"
+          git push
