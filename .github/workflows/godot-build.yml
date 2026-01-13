@@ -1,4 +1,4 @@
-name: Build Godot Web Game (debug)
+name: Build Godot Web Game (offline)
 
 on:
   workflow_dispatch:
@@ -21,17 +21,19 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # 1️⃣ Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      # 2️⃣ Install unzip
+      - name: Install unzip
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y wget unzip zip
+          sudo apt-get install -y unzip zip
 
-      - name: Resolve variables (supports repo dispatch or manual)
+      # 3️⃣ Resolve input variables
+      - name: Set build variables
         run: |
-          # prefer client_payload when repository_dispatch is used
           if [ -n "${{ github.event.client_payload.game_id }}" ]; then
             echo "GAME_NAME=${{ github.event.client_payload.game_id }}" >> $GITHUB_ENV
           else
@@ -46,105 +48,63 @@ jobs:
 
           echo "Resolved TEMPLATE=$TEMPLATE GAME_NAME=$GAME_NAME"
 
-      - name: Download Godot headless (official release)
+      # 4️⃣ Extract Godot headless from repo
+      - name: Use Godot Headless from repo
         run: |
-          # HEADLESS binary from GitHub release (4.2.1-stable)
-          GODOT_ZIP="Godot_v4.2.1-stable_linux.headless.64.zip"
-          URL="https://github.com/godotengine/godot/releases/download/4.2.1-stable/${GODOT_ZIP}"
-          echo "Downloading $URL"
-          wget -q "$URL" -O "$GODOT_ZIP"
-          echo "Listing zip contents:"
-          unzip -l "$GODOT_ZIP" | sed -n '1,20p'
-          unzip -q "$GODOT_ZIP"
-          # find the executable created by unzip (common name)
-          BIN=$(find . -maxdepth 2 -type f -name "Godot_*" -print -quit || true)
-          if [ -z "$BIN" ]; then
-            # fallback to typical name
-            BIN="./Godot_v4.2.1-stable_linux.headless.64"
-          fi
-          chmod +x "$BIN" || true
-          sudo mv "$BIN" /usr/local/bin/godot || sudo mv "$BIN" /usr/local/bin/godot || true
-          echo "Godot path:"
-          which godot || ls -la /usr/local/bin/godot || true
-          godot --version || true
+          unzip -q tools/Godot_v4.2.1-stable_linux.headless.64.zip -d tools/
+          chmod +x tools/Godot_v4.2.1-stable_linux.headless.64
+          sudo mv tools/Godot_v4.2.1-stable_linux.headless.64 /usr/local/bin/godot
+          godot --version
 
-      - name: Install export templates (official release)
+      # 5️⃣ Prepare build workspace
+      - name: Prepare build workspace
         run: |
-          # Put templates into XDG_DATA_HOME so Godot will find them
-          export XDG_DATA_HOME="${HOME}/.local/share"
-          mkdir -p "$XDG_DATA_HOME/godot"
-          TPL="Godot_v4.2.1-stable_export_templates.tpz"
-          TPL_URL="https://github.com/godotengine/godot/releases/download/4.2.1-stable/${TPL}"
-          echo "Downloading templates $TPL_URL"
-          wget -q "$TPL_URL" -O "$TPL"
-          echo "List templates zip (first lines):"
-          unzip -l "$TPL" | sed -n '1,40p'
-          unzip -q "$TPL" -d "$XDG_DATA_HOME/godot"
-          echo "Export templates installed to $XDG_DATA_HOME/godot (ls):"
-          ls -la "$XDG_DATA_HOME/godot" || true
-          # Clean up zip file
-          rm -f "$TPL" || true
-
-      - name: Prepare build_work copy and debug-print project
-        run: |
-          # copy template project to a clean working directory
           rm -rf build_work
           mkdir -p build_work
-          cp -r "games/$TEMPLATE/." build_work/ || true
+          cp -r "games/$TEMPLATE/." build_work/
+          echo "Listing build_work files:"
+          ls -R build_work
 
-          echo "=== build_work listing ==="
-          ls -la build_work || true
-
-          echo "=== project.godot content (first 60 lines) ==="
-          if [ -f build_work/project.godot ]; then
-            sed -n '1,200p' build_work/project.godot || true
-          else
-            echo "MISSING project.godot"
-          fi
-
-          echo "=== export_presets.cfg (first 200 lines) ==="
-          if [ -f build_work/export_presets.cfg ]; then
-            sed -n '1,200p' build_work/export_presets.cfg || true
-          else
-            echo "MISSING export_presets.cfg"
-          fi
-
-          echo "=== game folder resources listing (res://) ==="
-          find build_work -maxdepth 2 -type f | sed -n '1,200p' || true
-
-      - name: Validate template path
+      # 6️⃣ Validate template project
+      - name: Validate template
         run: |
-          if [ ! -d "games/$TEMPLATE" ]; then
-            echo "ERROR: template games/$TEMPLATE not found. Available templates:"
-            ls -1 games || true
+          if [ ! -f build_work/project.godot ]; then
+            echo "ERROR: project.godot missing in template"
+            exit 1
+          fi
+          if [ ! -f build_work/export_presets.cfg ]; then
+            echo "ERROR: export_presets.cfg missing in template"
+            exit 1
+          fi
+          if [ ! -f build_work/main.tscn ]; then
+            echo "ERROR: main.tscn missing in template"
             exit 1
           fi
 
-      - name: Try export (verbose-ish)
+      # 7️⃣ Run Godot export
+      - name: Export Web build
         run: |
           set -o pipefail
           mkdir -p out_builds/${GAME_NAME}
-          echo "Running Godot export (this will print Godot output)..."
-          # Use --export (not release) for clearer logs in some cases; both are OK.
-          godot --headless --path build_work --export "Web" out_builds/${GAME_NAME} 2>&1 | tee godot_export_log.txt || exit_code=$?; echo "EXPORT_EXIT=$exit_code"; if [ "${exit_code:-0}" != "0" ]; then echo "----- godot_export_log.txt start -----"; sed -n '1,200p' godot_export_log.txt; echo "----- godot_export_log.txt end -----"; exit $exit_code; fi
-          echo "Export completed, listing out_builds/${GAME_NAME}:"
-          ls -la out_builds/${GAME_NAME} || true
+          godot --headless --path build_work --export "Web" out_builds/${GAME_NAME} 2>&1 | tee godot_export_log.txt || export_code=$?; echo "EXPORT_EXIT=$export_code"; if [ "${export_code:-0}" != "0" ]; then echo "=== Godot Export Log Start ==="; head -n 200 godot_export_log.txt; echo "=== Godot Export Log End ==="; exit $export_code; fi
+          echo "Listing out_builds/${GAME_NAME}:"
+          ls -la out_builds/${GAME_NAME}
 
-      - name: Package output (if present)
+      # 8️⃣ Package output
+      - name: Zip output
         run: |
           if [ -d out_builds/${GAME_NAME} ]; then
             cd out_builds/${GAME_NAME}
             zip -r ../../${GAME_NAME}.zip . || true
             cd ../../
-            ls -lh ${GAME_NAME}.zip || true
+            ls -lh ${GAME_NAME}.zip
           else
-            echo "No out_builds/${GAME_NAME} folder - export failed or created nothing"
+            echo "No build output found, export likely failed"
             exit 1
           fi
 
-      - name: Show final files in repo (debug)
+      # 9️⃣ Optional: debug builds folder
+      - name: List builds folder
         run: |
-          echo "Repo builds folder listing:"
+          echo "Listing builds folder in repo:"
           ls -R builds || true
-          echo "Out builds zip if created:"
-          ls -lh | sed -n '1,200p' || true
