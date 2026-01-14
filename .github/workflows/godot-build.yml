@@ -1,96 +1,85 @@
-name: Build Godot Web Game (robust)
+name: Build Godot Web Game
 
 on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: "Output build folder name (manual)"
+        description: "Output build folder name"
         required: true
         default: "runner"
       template:
-        description: "Game template folder inside /games (manual)"
+        description: "Game template folder inside /games"
         required: true
         default: "runner"
 
   repository_dispatch:
     types: [build_game]
-    
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+
     steps:
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # 2️⃣ Install system dependencies
       - name: Install system dependencies
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y wget unzip zip python3
-      - name: Resolve GAME_NAME and TEMPLATE
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
+
+      # 3️⃣ Download Godot (NON-MONO, OFFICIAL)
+      - name: Download Godot Engine
         run: |
-          python3 - <<'PY'
-          import json, os
-          evpath = os.environ.get("GITHUB_EVENT_PATH")
-          ev = {}
-          try:
-              with open(evpath) as f:
-                  ev = json.load(f)
-          except Exception:
-              pass
-
-          payload = ev.get("client_payload", {}) or {}
-          game = payload.get("game_name") or payload.get("game_id") or "runner"
-          template = payload.get("template") or "runner"
-
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"GAME_NAME={game}\n")
-              f.write(f"TEMPLATE={template}\n")
-
-          print("GAME_NAME =", game)
-          print("TEMPLATE  =", template)
-          PY
-      - name: Download Godot (headless)
-        run: |
-          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.headless.64.zip
-          unzip Godot_v4.2.1-stable_linux.headless.64.zip
-          chmod +x Godot_v4.2.1-stable_linux.headless.64
-          sudo mv Godot_v4.2.1-stable_linux.headless.64 /usr/local/bin/godot
+          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
+          unzip Godot_v4.2.1-stable_linux.x86_64.zip
+          chmod +x Godot_v4.2.1-stable_linux.x86_64
+          sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
           godot --version
+
+      # 4️⃣ Install Godot export templates
       - name: Install Godot export templates
         run: |
-          mkdir -p ~/.local/share/godot
+          mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
           wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz
-          unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot
-      - name: Prepare build workspace
+          unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.2.1.stable
+          mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
+          rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
+          ls ~/.local/share/godot/export_templates/4.2.1.stable
+
+      # 5️⃣ Resolve input values (manual OR backend)
+      - name: Resolve build variables
         run: |
-          rm -rf build_work out_builds || true
-          mkdir -p build_work out_builds
-          cp -r games/$TEMPLATE/. build_work/
-      - name: Export Godot Web build
+          echo "GAME_NAME=${{ github.event.inputs.game_name || github.event.client_payload.game_id }}" >> $GITHUB_ENV
+          echo "TEMPLATE=${{ github.event.inputs.template || github.event.client_payload.template }}" >> $GITHUB_ENV
+
+      # 6️⃣ Prepare build directory
+      - name: Prepare build directory
         run: |
-          mkdir -p out_builds/$GAME_NAME
-          godot --headless --path build_work --export "Web" out_builds/$GAME_NAME
-      - name: Promote build
+          mkdir -p builds/$GAME_NAME
+
+      # 7️⃣ Export Godot Web build
+      - name: Export Web build
         run: |
-          if [ -f out_builds/$GAME_NAME/index.html ]; then
-            mkdir -p builds/$GAME_NAME
-            cp -r out_builds/$GAME_NAME/* builds/$GAME_NAME/
-          else
-            echo "index.html not found"
-            exit 1
-          fi
-      - name: Commit builds folder
+          godot \
+            --headless \
+            --path games/$TEMPLATE \
+            --export-release "Web" \
+            builds/$GAME_NAME/index.html
+
+      # 8️⃣ Verify build output
+      - name: Verify build output
+        run: |
+          echo "=== Build contents ==="
+          ls -R builds/$GAME_NAME
+
+      # 9️⃣ Commit build files (optional)
+      - name: Commit build files
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add builds
           git commit -m "Build game: $GAME_NAME" || echo "Nothing to commit"
-            git push || true
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-            name: godot-build-${{ env.GAME_NAME }}
-           path: builds/${{ env.GAME_NAME }}
-
-          
-        
+          git push
