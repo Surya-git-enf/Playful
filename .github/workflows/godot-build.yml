@@ -1,94 +1,70 @@
-name: Godot Docker Web Build
+name: Build Godot Web Game
 
 on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: "Output build folder name (manual)"
+        description: "Output build folder name"
         required: true
         default: "runner"
       template:
-        description: "Template folder inside games/"
+        description: "Game template folder inside /games"
         required: true
         default: "runner"
+
   repository_dispatch:
     types: [build_game]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+
+    env:
+      GAME_NAME: ${{ github.event.inputs.game_name || github.event.client_payload.game_name || github.event.client_payload.game_id }}
+      TEMPLATE:  ${{ github.event.inputs.template  || github.event.client_payload.template }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # 1️⃣ Checkout
+      - uses: actions/checkout@v4
 
-      - name: Build godot Docker image (tag: godot)
+      # 2️⃣ System deps
+      - name: Install deps
         run: |
-          docker build -f Dockerfile -t godot:latest .
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
 
-      - name: Resolve variables (GAME_NAME & TEMPLATE)
+      # 3️⃣ Godot
+      - name: Install Godot
         run: |
-          # prefer repository_dispatch payload; fallback to workflow inputs
-          if [ -n "${{ github.event.client_payload.game_id }}" ]; then
-            echo "GAME_NAME=${{ github.event.client_payload.game_id }}" >> $GITHUB_ENV
-          else
-            echo "GAME_NAME=${{ github.event.inputs.game_name }}" >> $GITHUB_ENV
-          fi
+          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
+          unzip Godot_v4.2.1-stable_linux.x86_64.zip
+          chmod +x Godot_v4.2.1-stable_linux.x86_64
+          sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
+          godot --version
 
-          if [ -n "${{ github.event.client_payload.template }}" ]; then
-            echo "TEMPLATE=${{ github.event.client_payload.template }}" >> $GITHUB_ENV
-          else
-            echo "TEMPLATE=${{ github.event.inputs.template }}" >> $GITHUB_ENV
-          fi
-
-          echo "Resolved: GAME_NAME=$GAME_NAME TEMPLATE=$TEMPLATE"
-
-      - name: Prepare workspace (copy project into build_work)
+      # 4️⃣ Export templates
+      - name: Install export templates
         run: |
-          rm -rf build_work out_builds builds || true
-          mkdir -p build_work out_builds builds
-          if [ ! -d "games/$TEMPLATE" ]; then
-            echo "Template 'games/$TEMPLATE' not found. Available templates:" >&2
-            ls -1 games || true
-            exit 1
-          fi
-          cp -r "games/$TEMPLATE/." build_work/
-          echo "Copied games/$TEMPLATE -> build_work (listing):"
-          ls -la build_work || true
-          echo "export_presets.cfg (head):"
-          sed -n '1,120p' build_work/export_presets.cfg || true
+          mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
+          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz
+          unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.2.1.stable
+          mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
+          rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
 
-      - name: Run Godot export inside Docker (export to out_builds/$GAME_NAME)
+      # 5️⃣ Build folder
+      - name: Prepare build dir
         run: |
-          mkdir -p out_builds/$GAME_NAME
-          echo "Running container: exporting to out_builds/$GAME_NAME ..."
-          docker run --rm \
-            -v "$PWD":/project \
-            godot:latest \
-            --headless --path /project/build_work --export "Web" /project/out_builds/$GAME_NAME 2>&1 | tee godot_export_log.txt || true
-          echo "==== tail of godot_export_log.txt ===="
-          tail -n 200 godot_export_log.txt || true
-          echo "Listing out_builds/$GAME_NAME:"
-          ls -la out_builds/$GAME_NAME || true
+          mkdir -p builds/$GAME_NAME
 
-      - name: Promote build into builds/$GAME_NAME if index.html exists
+      # 6️⃣ EXPORT (THIS IS THE KEY LINE)
+      - name: Export Web
         run: |
-          if [ -f out_builds/$GAME_NAME/index.html ]; then
-            rm -rf builds/$GAME_NAME || true
-            mkdir -p builds/$GAME_NAME
-            cp -r out_builds/$GAME_NAME/* builds/$GAME_NAME/
-            echo "Export success: builds/$GAME_NAME created (listing):"
-            ls -la builds/$GAME_NAME || true
-          else
-            echo "ERROR: index.html not found in out_builds/$GAME_NAME"
-            echo "Show godot_export_log.txt tail (300):"
-            tail -n 300 godot_export_log.txt || true
-            exit 2
-          fi
+          godot --headless \
+            --path games/$TEMPLATE \
+            --export-release "Web" \
+            builds/$GAME_NAME/index.html
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: godot-build-${{ env.GAME_NAME }}
-          path: builds/${{ env.GAME_NAME }}
+      # 7️⃣ Verify
+      - name: Verify output
+        run: |
+          ls -R builds/$GAME_NAME
