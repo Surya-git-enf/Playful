@@ -1,15 +1,15 @@
+
 # main.py
 import os
 import uuid
 import json
 import shutil
 import zipfile
-import time
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 import requests
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -57,15 +57,6 @@ def update_game_record(game_id: str, patch: Dict[str, Any]):
     db[game_id].update(patch)
     save_db(db)
 
-def append_game_log(game_id: str, message: str):
-    db = load_db()
-    if game_id not in db:
-        return
-    logs = db[game_id].get("logs", [])
-    logs.append(message)
-    db[game_id]["logs"] = logs
-    save_db(db)
-
 # ---------- App ----------
 app = FastAPI(title="Game Builder Backend")
 app.add_middleware(
@@ -86,77 +77,43 @@ class CreateGameRequest(BaseModel):
 def health():
     return {"status":"ok"}
 
-def dispatch_to_github_async(game_id: str, template: str, build_type: str, config: Dict[str, Any], callback_url: str):
-    """
-    Background worker: perform repository_dispatch to GitHub and update record.
-    This will append logs and set status to 'building' on success or 'error' on failure.
-    """
-    try:
-        token = os.getenv("GITHUB_TRIGGER_TOKEN")
-        repo = os.getenv("GITHUB_REPO")
-        if not token or not repo:
-            append_game_log(game_id, "Missing GITHUB_TRIGGER_TOKEN or GITHUB_REPO (background).")
-            update_game_record(game_id, {"status":"error"})
-            return
-
-        url = f"https://api.github.com/repos/{repo}/dispatches"
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3+json",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "event_type": "build_game",
-            "client_payload": {
-                "game_id": game_id,
-                "template": template,
-                "build_type": build_type,
-                "config": config,
-                "callback_upload_url": callback_url
-            }
-        }
-
-        attempts = 3
-        for attempt in range(1, attempts+1):
-            try:
-                r = requests.post(url, headers=headers, json=payload, timeout=15)
-            except Exception as exc:
-                append_game_log(game_id, f"Attempt {attempt}: request exception: {exc}")
-                time.sleep(2)
-                continue
-
-            # GitHub returns 204 No Content on success for repository_dispatch
-            if r.status_code in (204, 201):
-                append_game_log(game_id, f"Dispatched to GitHub actions (attempt {attempt}).")
-                update_game_record(game_id, {"status":"building"})
-                return
-            else:
-                append_game_log(game_id, f"Attempt {attempt}: GitHub API returned {r.status_code}: {r.text}")
-                time.sleep(2)
-
-        # if we reach here, all attempts failed
-        update_game_record(game_id, {"status":"error"})
-        append_game_log(game_id, "repository_dispatch failed after retries.")
-    except Exception as ex:
-        append_game_log(game_id, f"Unexpected background error: {ex}")
-        update_game_record(game_id, {"status":"error"})
-
 @app.post("/api/games/create")
-def create_game(req: CreateGameRequest, background_tasks: BackgroundTasks):
+def create_game(req: CreateGameRequest):
     rec = create_game_record(req.game_name, req.template, req.build_type, req.config)
     game_id = rec["game_id"]
 
-    # quick sanity check for config so user sees immediate error
     if not GITHUB_TRIGGER_TOKEN or not GITHUB_REPO:
         update_game_record(game_id, {"status":"error", "logs":["Missing GITHUB_TRIGGER_TOKEN or GITHUB_REPO"]})
         return {"status":"error","message":"Server missing GitHub trigger configuration.","game_id":game_id}
 
-    callback_upload_url = f"{BASE_URL.rstrip('/')}/api/upload"
-    # schedule the background dispatch (non-blocking)
-    background_tasks.add_task(dispatch_to_github_async, game_id, req.template, req.build_type, req.config, callback_upload_url)
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/dispatches"
+    headers = {
+        "Authorization": f"token {GITHUB_TRIGGER_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    payload = {
+        "event_type": "build_game",
+        "client_payload": {
+            "game_id": game_id,
+            "template": req.template,
+            "build_type": req.build_type,
+            "config": req.config,
+            "callback_upload_url": f"{BASE_URL.rstrip('/')}/api/upload"
+        }
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=30)
+    except Exception as e:
+        update_game_record(game_id, {"status":"error", "logs":[f"dispatch exception: {e}"]})
+        raise HTTPException(status_code=500, detail=str(e))
 
-    # return immediately to client
-    return {"status":"queued","game_id":game_id}
+    if r.status_code in (204, 201):
+        update_game_record(game_id, {"status":"building", "logs":["dispatched to github actions"]})
+        return {"status":"building", "game_id": game_id}
+    else:
+        msg = f"github dispatch failed: {r.status_code} {r.text}"
+        update_game_record(game_id, {"status":"error", "logs":[msg]})
+        raise HTTPException(status_code=500, detail=msg)
 
 @app.post("/api/upload")
 async def upload_build(
@@ -166,7 +123,7 @@ async def upload_build(
     authorization: Optional[str] = Header(None),
     x_upload_secret: Optional[str] = Header(None)
 ):
-    # Accept either `Authorization: Bearer <secret>` or header `X-Upload-Secret: <secret>`
+    # Accept either Authorization: Bearer <secret> or header X-Upload-Secret: <secret>
     incoming_secret = None
     if authorization:
         # Expected: "Bearer <secret>"
