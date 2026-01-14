@@ -89,8 +89,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-           name: godot-build-${{ env.GAME_NAME }}
-          path: builds/${{ env.GAME_NAME }}
+            name: godot-build-${{ env.GAME_NAME }}
+           path: builds/${{ env.GAME_NAME }}
 
           
         
