@@ -12,22 +12,41 @@ on:
         required: true
         default: "runner"
 
+  repository_dispatch:
+    types: [build_game]
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      # 1️⃣ Checkout
+      # 1️⃣ Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ System deps
+      # 2️⃣ Install system dependencies
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip
+          sudo apt-get update -y
+          sudo apt-get install -y wget unzip zip
 
-      # 3️⃣ Download Godot HEADLESS (CORRECT ONE)
+      # 3️⃣ Resolve inputs (manual OR backend trigger)
+      - name: Resolve build variables
+        run: |
+          if [ -n "${{ github.event.client_payload.game_name }}" ]; then
+            echo "GAME_NAME=${{ github.event.client_payload.game_name }}" >> $GITHUB_ENV
+          else
+            echo "GAME_NAME=${{ github.event.inputs.game_name }}" >> $GITHUB_ENV
+          fi
+
+          if [ -n "${{ github.event.client_payload.template }}" ]; then
+            echo "TEMPLATE=${{ github.event.client_payload.template }}" >> $GITHUB_ENV
+          else
+            echo "TEMPLATE=${{ github.event.inputs.template }}" >> $GITHUB_ENV
+          fi
+
+      # 4️⃣ Download Godot Headless (OFFICIAL)
       - name: Download Godot headless
         run: |
           wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.headless.64.zip
@@ -36,37 +55,44 @@ jobs:
           sudo mv Godot_v4.2.1-stable_linux.headless.64 /usr/local/bin/godot
           godot --version
 
-      # 4️⃣ Install export templates
-      - name: Install export templates
+      # 5️⃣ Install Godot export templates (REQUIRED for Web)
+      - name: Install Godot export templates
         run: |
           mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
           wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz
           unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.2.1.stable
           mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
+          rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
 
-      # 5️⃣ Prepare build
+      # 6️⃣ Verify project exists
+      - name: Verify Godot project
+        run: |
+          ls -la games/$TEMPLATE
+          cat games/$TEMPLATE/project.godot
+
+      # 7️⃣ Create build folder
       - name: Prepare build directory
         run: |
-          mkdir -p builds/${{ inputs.game_name }}
+          mkdir -p builds/$GAME_NAME
 
-      # 6️⃣ Export Web
-      - name: Export Web build
+      # 8️⃣ Export Web build
+      - name: Export Godot Web build
         run: |
           godot \
             --headless \
-            --path games/${{ inputs.template }} \
+            --path games/$TEMPLATE \
             --export-release "Web" \
-            builds/${{ inputs.game_name }}/index.html
+            builds/$GAME_NAME/index.html
 
-      # 7️⃣ Verify output
+      # 9️⃣ Verify build output
       - name: Verify build output
         run: |
-          echo "=== BUILD CONTENTS ==="
-          ls -R builds/${{ inputs.game_name }}
+          echo "=== Web Build Output ==="
+          ls -R builds/$GAME_NAME
 
-      # 8️⃣ Upload artifact (DOWNLOAD ON MOBILE 📱)
+      # 🔟 Upload build artifact (DOWNLOADABLE ON MOBILE 📱)
       - name: Upload Web Build
         uses: actions/upload-artifact@v4
         with:
-          name: godot-web-${{ inputs.game_name }}
-          path: builds/${{ inputs.game_name }}
+          name: godot-web-${{ env.GAME_NAME }}
+          path: builds/${{ env.GAME_NAME }}
