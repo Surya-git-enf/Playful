@@ -1,85 +1,94 @@
-name: Build Godot Web Game
+name: Godot Docker Web Build
 
 on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: "Output build folder name"
+        description: "Output build folder name (manual)"
         required: true
         default: "runner"
       template:
-        description: "Game template folder inside /games"
+        description: "Template folder inside games/"
         required: true
         default: "runner"
-
   repository_dispatch:
     types: [build_game]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install system dependencies
-      - name: Install system dependencies
+      - name: Build godot Docker image (tag: godot)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip
+          docker build -f Dockerfile -t godot:latest .
 
-      # 3️⃣ Download Godot (NON-MONO, OFFICIAL)
-      - name: Download Godot Engine
+      - name: Resolve variables (GAME_NAME & TEMPLATE)
         run: |
-          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
-          unzip Godot_v4.2.1-stable_linux.x86_64.zip
-          chmod +x Godot_v4.2.1-stable_linux.x86_64
-          sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
-          godot --version
+          # prefer repository_dispatch payload; fallback to workflow inputs
+          if [ -n "${{ github.event.client_payload.game_id }}" ]; then
+            echo "GAME_NAME=${{ github.event.client_payload.game_id }}" >> $GITHUB_ENV
+          else
+            echo "GAME_NAME=${{ github.event.inputs.game_name }}" >> $GITHUB_ENV
+          fi
 
-      # 4️⃣ Install Godot export templates
-      - name: Install Godot export templates
-        run: |
-          mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
-          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz
-          unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.2.1.stable
-          mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
-          rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
-          ls ~/.local/share/godot/export_templates/4.2.1.stable
+          if [ -n "${{ github.event.client_payload.template }}" ]; then
+            echo "TEMPLATE=${{ github.event.client_payload.template }}" >> $GITHUB_ENV
+          else
+            echo "TEMPLATE=${{ github.event.inputs.template }}" >> $GITHUB_ENV
+          fi
 
-      # 5️⃣ Resolve input values (manual OR backend)
-      - name: Resolve build variables
-        run: |
-          echo "GAME_NAME=${{ github.event.inputs.game_name || github.event.client_payload.game_id }}" >> $GITHUB_ENV
-          echo "TEMPLATE=${{ github.event.inputs.template || github.event.client_payload.template }}" >> $GITHUB_ENV
+          echo "Resolved: GAME_NAME=$GAME_NAME TEMPLATE=$TEMPLATE"
 
-      # 6️⃣ Prepare build directory
-      - name: Prepare build directory
+      - name: Prepare workspace (copy project into build_work)
         run: |
-          mkdir -p builds/$GAME_NAME
+          rm -rf build_work out_builds builds || true
+          mkdir -p build_work out_builds builds
+          if [ ! -d "games/$TEMPLATE" ]; then
+            echo "Template 'games/$TEMPLATE' not found. Available templates:" >&2
+            ls -1 games || true
+            exit 1
+          fi
+          cp -r "games/$TEMPLATE/." build_work/
+          echo "Copied games/$TEMPLATE -> build_work (listing):"
+          ls -la build_work || true
+          echo "export_presets.cfg (head):"
+          sed -n '1,120p' build_work/export_presets.cfg || true
 
-      # 7️⃣ Export Godot Web build
-      - name: Export Web build
+      - name: Run Godot export inside Docker (export to out_builds/$GAME_NAME)
         run: |
-          godot \
-            --headless \
-            --path games/$TEMPLATE \
-            --export-release "Web" \
-            builds/$GAME_NAME/index.html
+          mkdir -p out_builds/$GAME_NAME
+          echo "Running container: exporting to out_builds/$GAME_NAME ..."
+          docker run --rm \
+            -v "$PWD":/project \
+            godot:latest \
+            --headless --path /project/build_work --export "Web" /project/out_builds/$GAME_NAME 2>&1 | tee godot_export_log.txt || true
+          echo "==== tail of godot_export_log.txt ===="
+          tail -n 200 godot_export_log.txt || true
+          echo "Listing out_builds/$GAME_NAME:"
+          ls -la out_builds/$GAME_NAME || true
 
-      # 8️⃣ Verify build output
-      - name: Verify build output
+      - name: Promote build into builds/$GAME_NAME if index.html exists
         run: |
-          echo "=== Build contents ==="
-          ls -R builds/$GAME_NAME
+          if [ -f out_builds/$GAME_NAME/index.html ]; then
+            rm -rf builds/$GAME_NAME || true
+            mkdir -p builds/$GAME_NAME
+            cp -r out_builds/$GAME_NAME/* builds/$GAME_NAME/
+            echo "Export success: builds/$GAME_NAME created (listing):"
+            ls -la builds/$GAME_NAME || true
+          else
+            echo "ERROR: index.html not found in out_builds/$GAME_NAME"
+            echo "Show godot_export_log.txt tail (300):"
+            tail -n 300 godot_export_log.txt || true
+            exit 2
+          fi
 
-      # 9️⃣ Commit build files (optional)
-      - name: Commit build files
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add builds
-          git commit -m "Build game: $GAME_NAME" || echo "Nothing to commit"
-          git push
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: godot-build-${{ env.GAME_NAME }}
+          path: builds/${{ env.GAME_NAME }}
