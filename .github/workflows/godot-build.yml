@@ -6,11 +6,14 @@ on:
       game_name:
         description: "Output build folder name"
         required: true
-        default: "runner-build"
+        default: "runner"
       template:
         description: "Game template folder inside /games"
         required: true
         default: "runner"
+
+  repository_dispatch:
+    types: [build_game]
 
 jobs:
   build:
@@ -27,7 +30,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wget unzip
 
-      # 3️⃣ Download Godot (NON-MONO) from GitHub
+      # 3️⃣ Download Godot (NON-MONO, OFFICIAL)
       - name: Download Godot Engine
         run: |
           wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
@@ -36,7 +39,7 @@ jobs:
           sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
           godot --version
 
-      # 4️⃣ Install export templates
+      # 4️⃣ Install Godot export templates
       - name: Install Godot export templates
         run: |
           mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
@@ -46,30 +49,37 @@ jobs:
           rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
           ls ~/.local/share/godot/export_templates/4.2.1.stable
 
-      # 5️⃣ Prepare build directory
+      # 5️⃣ Resolve input values (manual OR backend)
+      - name: Resolve build variables
+        run: |
+          echo "GAME_NAME=${{ github.event.inputs.game_name || github.event.client_payload.game_id }}" >> $GITHUB_ENV
+          echo "TEMPLATE=${{ github.event.inputs.template || github.event.client_payload.template }}" >> $GITHUB_ENV
+
+      # 6️⃣ Prepare build directory
       - name: Prepare build directory
         run: |
-          mkdir -p builds/${{ inputs.game_name }}
+          mkdir -p builds/$GAME_NAME
 
-      # 6️⃣ Export Web build
-      - name: Export Godot Web build
+      # 7️⃣ Export Godot Web build
+      - name: Export Web build
         run: |
           godot \
             --headless \
-            --path games/${{ inputs.template }} \
+            --path games/$TEMPLATE \
             --export-release "Web" \
-            builds/${{ inputs.game_name }}/index.html
+            builds/$GAME_NAME/index.html
 
-      # 7️⃣ Verify build output
-      - name: Verify build
+      # 8️⃣ Verify build output
+      - name: Verify build output
         run: |
-          ls -R builds/${{ inputs.game_name }}
+          echo "=== Build contents ==="
+          ls -R builds/$GAME_NAME
 
-      # 8️⃣ Commit build output (optional but useful)
+      # 9️⃣ Commit build files (optional)
       - name: Commit build files
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add builds
-          git commit -m "Build Web game: ${{ inputs.game_name }}" || echo "Nothing to commit"
+          git commit -m "Build game: $GAME_NAME" || echo "Nothing to commit"
           git push
