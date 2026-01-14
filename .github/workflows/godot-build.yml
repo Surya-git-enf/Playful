@@ -1,4 +1,4 @@
-name: Build Godot Web Game
+name: Build Godot Web Game (robust + fallback)
 
 on:
   workflow_dispatch:
@@ -18,68 +18,208 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install system dependencies
-      - name: Install system dependencies
+      - name: Install system packages
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip
+          sudo apt-get update -y
+          sudo apt-get install -y wget unzip zip python3
 
-      # 3️⃣ Download Godot (NON-MONO, OFFICIAL)
-      - name: Download Godot Engine
+      - name: Resolve inputs
         run: |
-          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
-          unzip Godot_v4.2.1-stable_linux.x86_64.zip
-          chmod +x Godot_v4.2.1-stable_linux.x86_64
-          sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
-          godot --version
+          # Prefer repository_dispatch payload, otherwise workflow inputs
+          if [ -n "${{ github.event.client_payload.game_name }}" ]; then
+            echo "GAME_NAME=${{ github.event.client_payload.game_name }}" >> $GITHUB_ENV
+          else
+            echo "GAME_NAME=${{ github.event.inputs.game_name }}" >> $GITHUB_ENV
+          fi
+          if [ -n "${{ github.event.client_payload.template }}" ]; then
+            echo "TEMPLATE=${{ github.event.client_payload.template }}" >> $GITHUB_ENV
+          else
+            echo "TEMPLATE=${{ github.event.inputs.template }}" >> $GITHUB_ENV
+          fi
+          echo "Resolved TEMPLATE=$TEMPLATE GAME_NAME=$GAME_NAME"
 
-      # 4️⃣ Install Godot export templates
-      - name: Install Godot export templates
+      - name: Download Godot headless (with retries)
         run: |
-          mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
-          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz
-          unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.2.1.stable
-          mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
-          rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
-          ls ~/.local/share/godot/export_templates/4.2.1.stable
+          set -e
+          ZIP=Godot_v4.2.1-stable_linux.headless.64.zip
+          URL="https://github.com/godotengine/godot/releases/download/4.2.1-stable/${ZIP}"
+          n=0
+          until [ $n -ge 4 ]
+          do
+            echo "Downloading Godot attempt $((n+1))..."
+            if wget -q "$URL" -O /tmp/${ZIP}; then
+              echo "Downloaded /tmp/${ZIP}"
+              break
+            fi
+            n=$((n+1))
+            sleep 3
+          done
+          if [ ! -f /tmp/${ZIP} ]; then
+            echo "Failed to download Godot binary"; exit 10
+          fi
+          unzip -q /tmp/${ZIP} -d /tmp/godot_unzip || true
+          BIN=$(find /tmp/godot_unzip -maxdepth 2 -type f -perm /111 -print -quit || true)
+          if [ -z "$BIN" ]; then
+            BIN="/tmp/godot_unzip/Godot_v4.2.1-stable_linux.headless.64" || true
+          fi
+          chmod +x "$BIN" || true
+          sudo mv "$BIN" /usr/local/bin/godot || sudo cp "$BIN" /usr/local/bin/godot
+          echo "Godot installed at: $(which godot || echo '/usr/local/bin/godot')"
+          godot --version || true
 
-      # 5️⃣ Resolve input values (manual OR backend)
-      - name: Resolve build variables
+      - name: Install export templates (with retries)
         run: |
-          echo "GAME_NAME=${{ github.event.inputs.game_name || github.event.client_payload.game_id }}" >> $GITHUB_ENV
-          echo "TEMPLATE=${{ github.event.inputs.template || github.event.client_payload.template }}" >> $GITHUB_ENV
+          set -e
+          export XDG_DATA_HOME="${HOME}/.local/share"
+          mkdir -p "$XDG_DATA_HOME/godot"
+          TPL=Godot_v4.2.1-stable_export_templates.tpz
+          TPL_URL="https://github.com/godotengine/godot/releases/download/4.2.1-stable/${TPL}"
+          n=0
+          until [ $n -ge 4 ]
+          do
+            echo "Downloading templates attempt $((n+1))..."
+            if wget -q "$TPL_URL" -O /tmp/${TPL}; then
+              echo "Downloaded templates"
+              break
+            fi
+            n=$((n+1))
+            sleep 3
+          done
+          if [ ! -f /tmp/${TPL} ]; then
+            echo "Failed to download templates"; exit 11
+          fi
+          unzip -q /tmp/${TPL} -d "$XDG_DATA_HOME/godot"
+          rm -f /tmp/${TPL} || true
+          echo "Templates installed under $XDG_DATA_HOME/godot"
+          ls -la "$XDG_DATA_HOME/godot" || true
 
-      # 6️⃣ Prepare build directory
-      - name: Prepare build directory
+      - name: Prepare build workspace (copy template)
         run: |
-          mkdir -p builds/$GAME_NAME
+          set -e
+          rm -rf build_work out_builds
+          mkdir -p build_work
+          if [ ! -d "games/$TEMPLATE" ]; then
+            echo "ERROR: template games/$TEMPLATE not found. Available templates:"; ls -1 games || true
+            exit 12
+          fi
+          cp -r "games/$TEMPLATE/." build_work/
+          echo "=== build_work listing ==="
+          ls -la build_work || true
+          echo "=== project.godot head ==="
+          sed -n '1,120p' build_work/project.godot || true
+          echo "=== export_presets.cfg head ==="
+          sed -n '1,200p' build_work/export_presets.cfg || true
 
-      # 7️⃣ Export Godot Web build
-      - name: Export Web build
+      - name: Auto-fix export_presets.cfg (ensure filters + index path if needed)
         run: |
-          godot \
-            --headless \
-            --path games/$TEMPLATE \
-            --export-release "Web" \
-            builds/$GAME_NAME/index.html
+          PRE="build_work/export_presets.cfg"
+          if [ -f "$PRE" ]; then
+            python3 - <<'PY'
+import io,sys,re
+p="build_work/export_presets.cfg"
+s=open(p,'r',encoding='utf-8').read()
+if 'name="Web"' not in s:
+    print("ERROR: export_presets.cfg does not contain name=\"Web\" - export may fail")
+# ensure include_filter & exclude_filter present in preset.0
+m=re.search(r'(\[preset\.0\]\s*)(.*?)\n(?=\[preset\.|\Z)', s, flags=re.S)
+if m:
+    block=m.group(2)
+    changed=False
+    if 'include_filter' not in block:
+        block = block + '\ninclude_filter=""'
+        changed=True
+    if 'exclude_filter' not in block:
+        block = block + '\nexclude_filter=""'
+        changed=True
+    # if export_path looks like just "build", change to "build/index.html"
+    if re.search(r'export_path\s*=\s*"(build)"', block):
+        block = re.sub(r'export_path\s*=\s*"(build)"', 'export_path="build/index.html"', block)
+        changed=True
+    if changed:
+        new = s[:m.start(2)] + block + s[m.end(2):]
+        open(p,'w',encoding='utf-8').write(new)
+        print("Patched preset.0 with missing fields / export_path fix")
+    else:
+        print("Preset.0 already contains include/exclude and export_path OK")
+else:
+    print("No [preset.0] found - leaving file as-is")
+PY
+          else
+            echo "No export_presets.cfg found in template (export likely to fail)"
+          fi
+          echo "After patch (first 200 lines):"
+          sed -n '1,200p' build_work/export_presets.cfg || true
 
-      # 8️⃣ Verify build output
-      - name: Verify build output
+      - name: Try export method A (export to folder)
         run: |
-          echo "=== Build contents ==="
-          ls -R builds/$GAME_NAME
+          set -o pipefail
+          mkdir -p out_builds/$GAME_NAME
+          echo "Running export (method A) to out_builds/$GAME_NAME..."
+          godot --headless --path build_work --export "Web" out_builds/$GAME_NAME 2>&1 | tee godot_export_log.txt || true
+          echo "==== last 200 lines of godot_export_log.txt ===="
+          tail -n 200 godot_export_log.txt || true
+          if [ -f out_builds/$GAME_NAME/index.html ]; then
+            echo "Export method A succeeded."
+            exit 0
+          else
+            echo "Method A produced no index.html — will attempt secondary export (method B)."
+            # continue to next step (do not exit in action)
+            exit 2
+          fi
 
-      # 9️⃣ Commit build files (optional)
-      - name: Commit build files
+      - name: Fallback: patch export_path to build/index.html and retry (method B)
+        if: ${{ failure() || always() }}
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add builds
-          git commit -m "Build game: $GAME_NAME" || echo "Nothing to commit"
-          git push
+          # Only run if previous step didn't already succeed. We check and retry.
+          if [ -f out_builds/$GAME_NAME/index.html ]; then
+            echo "Already produced index.html — skipping fallback."
+            exit 0
+          fi
+          echo "Ensuring export_presets.cfg has export_path pointing to build/index.html..."
+          PRE="build_work/export_presets.cfg"
+          if [ -f "$PRE" ]; then
+            sed -n '1,200p' "$PRE" || true
+            # Ensure export_path contains index.html
+            python3 - <<'PY'
+import re
+p="build_work/export_presets.cfg"
+s=open(p,'r',encoding='utf-8').read()
+s=re.sub(r'export_path\s*=\s*".*?"', 'export_path="build/index.html"', s)
+open(p,'w',encoding='utf-8').write(s)
+print("Set export_path to build/index.html")
+PY
+            sed -n '1,120p' "$PRE" || true
+          fi
+          echo "Retrying export (method B) to out_builds/$GAME_NAME..."
+          godot --headless --path build_work --export-release "Web" out_builds/$GAME_NAME 2>&1 | tee -a godot_export_log.txt || true
+          echo "==== last 200 lines of godot_export_log.txt (after retry) ===="
+          tail -n 200 godot_export_log.txt || true
+          if [ -f out_builds/$GAME_NAME/index.html ]; then
+            echo "Export method B succeeded."
+            exit 0
+          else
+            echo "Export failed (both methods). See godot_export_log.txt above."
+            exit 20
+          fi
+
+      - name: Package & upload artifact (if present)
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: godot-build-${{ env.GAME_NAME }}
+          path: out_builds/${{ env.GAME_NAME }}
+
+      - name: Final listing (debug)
+        if: ${{ success() }}
+        run: |
+          echo "Final out_builds/${GAME_NAME} contents:"
+          ls -la out_builds/$GAME_NAME || true
+          echo "Also builds/ folder (if present):"
+          ls -la builds || true
+```0
