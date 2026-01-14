@@ -121,19 +121,19 @@ jobs:
           PRE="build_work/export_presets.cfg"
           if [ -f "$PRE" ]; then
             python3 - <<'PY'
-import io,sys,re
-p="build_work/export_presets.cfg"
-s=open(p,'r',encoding='utf-8').read()
-if 'name="Web"' not in s:
-    print("ERROR: export_presets.cfg does not contain name=\"Web\" - export may fail")
-# ensure include_filter & exclude_filter present in preset.0
-m=re.search(r'(\[preset\.0\]\s*)(.*?)\n(?=\[preset\.|\Z)', s, flags=re.S)
-if m:
-    block=m.group(2)
-    changed=False
-    if 'include_filter' not in block:
-        block = block + '\ninclude_filter=""'
-        changed=True
+            import io,sys,re
+            p="build_work/export_presets.cfg"
+            s=open(p,'r',encoding='utf-8').read()
+            if 'name="Web"' not in s:
+            print("ERROR: export_presets.cfg does not contain name=\"Web\" - export may fail")
+            # ensure include_filter & exclude_filter present in preset.0
+            m=re.search(r'(\[preset\.0\]\s*)(.*?)\n(?=\[preset\.|\Z)', s, flags=re.S)
+            if m:
+                block=m.group(2)
+                changed=False
+                if 'include_filter' not in block:
+                    block = block + '\ninclude_filter=""'
+                    changed=True
     if 'exclude_filter' not in block:
         block = block + '\nexclude_filter=""'
         changed=True
