@@ -18,44 +18,28 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
-      # 1️⃣ Checkout repo
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # 2️⃣ Install system dependencies
       - name: Install system dependencies
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y wget unzip zip
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
 
-      # 3️⃣ Resolve inputs (manual OR backend trigger)
-      - name: Resolve build variables
+      # 3️⃣ Download Godot (NON-MONO, OFFICIAL)
+      - name: Download Godot Engine
         run: |
-          if [ -n "${{ github.event.client_payload.game_name }}" ]; then
-            echo "GAME_NAME=${{ github.event.client_payload.game_name }}" >> $GITHUB_ENV
-          else
-            echo "GAME_NAME=${{ github.event.inputs.game_name }}" >> $GITHUB_ENV
-          fi
-
-          if [ -n "${{ github.event.client_payload.template }}" ]; then
-            echo "TEMPLATE=${{ github.event.client_payload.template }}" >> $GITHUB_ENV
-          else
-            echo "TEMPLATE=${{ github.event.inputs.template }}" >> $GITHUB_ENV
-          fi
-
-      # 4️⃣ Download Godot Headless (OFFICIAL)
-      - name: Download Godot headless
-        run: |
-          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.headless.64.zip
-          unzip Godot_v4.2.1-stable_linux.headless.64.zip
-          chmod +x Godot_v4.2.1-stable_linux.headless.64
-          sudo mv Godot_v4.2.1-stable_linux.headless.64 /usr/local/bin/godot
+          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
+          unzip Godot_v4.2.1-stable_linux.x86_64.zip
+          chmod +x Godot_v4.2.1-stable_linux.x86_64
+          sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
           godot --version
 
-      # 5️⃣ Install Godot export templates (REQUIRED for Web)
+      # 4️⃣ Install Godot export templates
       - name: Install Godot export templates
         run: |
           mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
@@ -63,20 +47,21 @@ jobs:
           unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.2.1.stable
           mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
           rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
+          ls ~/.local/share/godot/export_templates/4.2.1.stable
 
-      # 6️⃣ Verify project exists
-      - name: Verify Godot project
+      # 5️⃣ Resolve input values (manual OR backend)
+      - name: Resolve build variables
         run: |
-          ls -la games/$TEMPLATE
-          cat games/$TEMPLATE/project.godot
+          echo "GAME_NAME=${{ github.event.inputs.game_name || github.event.client_payload.game_id }}" >> $GITHUB_ENV
+          echo "TEMPLATE=${{ github.event.inputs.template || github.event.client_payload.template }}" >> $GITHUB_ENV
 
-      # 7️⃣ Create build folder
+      # 6️⃣ Prepare build directory
       - name: Prepare build directory
         run: |
           mkdir -p builds/$GAME_NAME
 
-      # 8️⃣ Export Web build
-      - name: Export Godot Web build
+      # 7️⃣ Export Godot Web build
+      - name: Export Web build
         run: |
           godot \
             --headless \
@@ -84,15 +69,17 @@ jobs:
             --export-release "Web" \
             builds/$GAME_NAME/index.html
 
-      # 9️⃣ Verify build output
+      # 8️⃣ Verify build output
       - name: Verify build output
         run: |
-          echo "=== Web Build Output ==="
+          echo "=== Build contents ==="
           ls -R builds/$GAME_NAME
 
-      # 🔟 Upload build artifact (DOWNLOADABLE ON MOBILE 📱)
-      - name: Upload Web Build
-        uses: actions/upload-artifact@v4
-        with:
-          name: godot-web-${{ env.GAME_NAME }}
-          path: builds/${{ env.GAME_NAME }}
+      # 9️⃣ Commit build files (optional)
+      - name: Commit build files
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add builds
+          git commit -m "Build game: $GAME_NAME" || echo "Nothing to commit"
+          git push
