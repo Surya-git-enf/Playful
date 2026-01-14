@@ -1,81 +1,191 @@
-name: Build Godot Web Game
+name: Build Godot Web Game (backend upload)
 
 on:
+  repository_dispatch:
+    types: [build_game]
   workflow_dispatch:
     inputs:
       game_name:
-        description: "Output build folder name"
+        description: "Fallback output build folder name"
         required: true
         default: "runner"
       template:
-        description: "Game folder inside /games"
+        description: "Fallback template folder inside /games"
         required: true
         default: "runner"
 
 jobs:
-  build:
+  build-and-upload:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE_URL_FALLBACK: ${{ secrets.BASE_URL }}
+      UPLOAD_SECRET: ${{ secrets.UPLOAD_SECRET }}
 
     steps:
-      # 1️⃣ Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install system dependencies
-      - name: Install system dependencies
+      - name: Install tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip
+          sudo apt-get update -y
+          sudo apt-get install -y curl unzip zip
 
-      # 3️⃣ Download Godot 4.2.1 (non-mono)
-      - name: Download Godot Engine
+      - name: Resolve variables (from repository_dispatch or manual inputs)
         run: |
-          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
-          unzip Godot_v4.2.1-stable_linux.x86_64.zip
-          chmod +x Godot_v4.2.1-stable_linux.x86_64
-          sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
-          godot --version
+          # Prefer repository_dispatch client_payload values, otherwise use manual inputs
+          if [ -n "${{ github.event.client_payload.game_id }}" ]; then
+            echo "GAME_ID=${{ github.event.client_payload.game_id }}" >> $GITHUB_ENV
+          else
+            echo "GAME_ID=${{ github.event.inputs.game_name }}" >> $GITHUB_ENV
+          fi
 
-      # 4️⃣ Install export templates
-      - name: Install Godot export templates
+          if [ -n "${{ github.event.client_payload.template }}" ]; then
+            echo "TEMPLATE=${{ github.event.client_payload.template }}" >> $GITHUB_ENV
+          else
+            echo "TEMPLATE=${{ github.event.inputs.template }}" >> $GITHUB_ENV
+          fi
+
+          # callback_url if backend provided it in client_payload, else fallback to BASE_URL secret
+          if [ -n "${{ github.event.client_payload.callback_upload_url }}" ]; then
+            echo "CALLBACK_URL=${{ github.event.client_payload.callback_upload_url }}" >> $GITHUB_ENV
+          else
+            echo "CALLBACK_URL=${BASE_URL_FALLBACK}/api/upload" >> $GITHUB_ENV
+          fi
+
+          echo "Resolved: GAME_ID=$GAME_ID, TEMPLATE=$TEMPLATE, CALLBACK_URL=$CALLBACK_URL"
+
+      - name: Download Godot headless (4.2.1) with retries
         run: |
-          mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
-          wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz
-          unzip Godot_v4.2.1-stable_export_templates.tpz
-          mv templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
-          rm -rf templates
-          ls ~/.local/share/godot/export_templates/4.2.1.stable
+          set -e
+          mkdir -p /tmp/godot
+          echo "Downloading Godot headless..."
+          curl -L --retry 5 --retry-delay 5 \
+            https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.headless.64.zip \
+            -o /tmp/godot/godot.zip
+          unzip -q /tmp/godot/godot.zip -d /tmp/godot || true
+          BIN=$(find /tmp/godot -type f -name "Godot_*headless*" -print -quit || true)
+          if [ -z "$BIN" ]; then
+            BIN="/tmp/godot/Godot_v4.2.1-stable_linux.headless.64"
+          fi
+          chmod +x "$BIN" || true
+          sudo mv "$BIN" /usr/local/bin/godot
+          godot --version || true
 
-      # 5️⃣ Resolve inputs
-      - name: Resolve variables
+      - name: Install Godot export templates (4.2.1)
         run: |
-          echo "GAME_NAME=${{ github.event.inputs.game_name }}" >> $GITHUB_ENV
-          echo "TEMPLATE=${{ github.event.inputs.template }}" >> $GITHUB_ENV
+          set -e
+          export XDG_DATA_HOME="${HOME}/.local/share"
+          mkdir -p "$XDG_DATA_HOME/godot"
+          echo "Downloading export templates..."
+          curl -L --retry 5 --retry-delay 5 \
+            https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz \
+            -o /tmp/templates.tpz
+          unzip -q /tmp/templates.tpz -d "$XDG_DATA_HOME/godot" || true
+          rm -f /tmp/templates.tpz
+          ls -la "$XDG_DATA_HOME/godot" || true
 
-      # 6️⃣ Prepare build directory
-      - name: Prepare build directory
+      - name: Prepare build workspace (copy project)
         run: |
-          mkdir -p builds/$GAME_NAME
+          set -e
+          rm -rf build_work out_builds
+          mkdir -p build_work
+          if [ ! -d "games/$TEMPLATE" ]; then
+            echo "ERROR: games/$TEMPLATE not found. Available templates:"; ls -1 games || true
+            exit 1
+          fi
+          cp -r "games/$TEMPLATE/." build_work/
+          # ensure .godot exists for headless export
+          mkdir -p build_work/.godot
+          touch build_work/.godot/.keep
+          echo "Copied project to build_work (first files):"
+          ls -la build_work | sed -n '1,200p'
 
-      # 7️⃣ Export Web build (IMPORTANT FIX)
-      - name: Export Godot Web build
+      - name: Auto-fix export_presets.cfg (remove export_path to avoid conflicts)
         run: |
-          godot \
-            --headless \
-            --verbose \
-            --path games/$TEMPLATE \
-            --export-release "Web" \
-            builds/$GAME_NAME
+          PRE="build_work/export_presets.cfg"
+          if [ -f "$PRE" ]; then
+            python3 - <<'PY'
+            import re,io
+            p = "build_work/export_presets.cfg"
+            s = open(p, "r", encoding="utf-8").read()
+            # remove any export_path lines to avoid clash with CLI export target
+            s = re.sub(r'^\s*export_path\s*=.*$', '', s, flags=re.M)
+            open(p, "w", encoding="utf-8").write(s)
+            print("Patched export_presets.cfg (removed export_path if present)")
+            PY
+          else
+            echo "No export_presets.cfg found - export may fail"
+          fi
+          echo "Preview (first 200 lines):"
+          sed -n '1,200p' build_work/export_presets.cfg || true
 
-      # 8️⃣ Verify output
-      - name: Verify build output
+      - name: Run Godot export -> out_builds/$GAME_ID (folder)
         run: |
-          echo "=== Build files ==="
-          ls -R builds/$GAME_NAME
+          set -o pipefail
+          mkdir -p out_builds/$GAME_ID
+          echo "Running Godot export to out_builds/$GAME_ID ..."
+          godot --headless --path build_work --export "Web" out_builds/$GAME_ID 2>&1 | tee godot_export_log.txt || true
+          echo "==== last 200 lines of godot_export_log.txt ===="
+          tail -n 200 godot_export_log.txt || true
 
-      # 9️⃣ Upload build as artifact (DOWNLOAD ON MOBILE 📱)
-      - name: Upload Web Build
+          # If Godot exported into folder, copy to builds/<game_id>
+          if [ -d "out_builds/$GAME_ID" ] && [ -f "out_builds/$GAME_ID/index.html" ]; then
+            rm -rf "builds/$GAME_ID" || true
+            mkdir -p "builds/$GAME_ID"
+            cp -r out_builds/$GAME_ID/* builds/$GAME_ID/ || true
+            echo "Copied out_builds -> builds/$GAME_ID"
+          fi
+
+          # final check
+          if [ -f "builds/$GAME_ID/index.html" ]; then
+            echo "Export SUCCESS: builds/$GAME_ID/index.html present"
+          else
+            echo "Export FAILED: no index.html in builds/$GAME_ID"
+            exit 2
+          fi
+
+          - name: Zip build for upload
+        run: |
+          ZIP="${GAME_ID}.zip"
+          rm -f "$ZIP" || true
+          cd builds
+          zip -r "../${ZIP}" "${GAME_ID}" || true
+          cd -
+          ls -lh "${GAME_ID}.zip" || true
+
+          - name: Upload zip to backend (callback URL)
+        env:
+          UPLOAD_SECRET: ${{ secrets.UPLOAD_SECRET }}
+        run: |
+          ZIP="${GAME_ID}.zip"
+          if [ ! -f "$ZIP" ]; then
+            echo "Zip not found: $ZIP"
+            exit 1
+          fi
+          echo "Uploading $ZIP to callback: $CALLBACK_URL"
+          # Use Authorization Bearer <secret> (main.py accepts this) 
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST "$CALLBACK_URL" \
+            -H "Authorization: Bearer ${UPLOAD_SECRET}" \
+            -F "file=@${ZIP}" \
+            -F "game_id=${GAME_ID}")
+          echo "Upload HTTP status: $HTTP_STATUS"
+          echo "Response body:"
+          cat response.json || true
+          if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ] && [ "$HTTP_STATUS" != "204" ]; then
+            echo "Upload failed with HTTP $HTTP_STATUS"
+            exit 1
+          fi
+
+          - name: Final debug output
+        run: |
+          echo "=== builds/${GAME_ID} contents ==="
+          ls -la builds/${GAME_ID} || true
+          echo "=== artifact zip ==="
+          ls -lh ${GAME_ID}.zip || true
+
+           - name: Upload artifact (optional backup)
         uses: actions/upload-artifact@v4
         with:
-          name: godot-web-${{ env.GAME_NAME }}
-          path: builds/${{ env.GAME_NAME }}
+          name: godot-build-${{ env.GAME_ID }}
+          path: ${{ env.GAME_ID }}.zip
