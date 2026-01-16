@@ -1,73 +1,60 @@
-name: Build Godot Web Game (Docker)
+name: Build Godot Web Game
 
 on:
-  workflow_dispatch:
-    inputs:
-      game_name:
-        description: "Output build folder name"
-        required: true
-        default: "runner"
-      template:
-        description: "Template folder inside games/"
-        required: true
-        default: "runner"
+  repository_dispatch:
+    types: [build_game]
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      GAME_NAME: ${{ github.event.inputs.game_name }}
-      TEMPLATE: ${{ github.event.inputs.template }}
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Show repo structure
+      - name: Resolve inputs
         run: |
-          echo "Repo root:"
-          ls -la
-          echo "Games folder:"
-          ls -la games || true
-          echo "Template folder:"
-          ls -la games/${TEMPLATE} || true
+          echo "GAME_ID=${{ github.event.client_payload.game_id }}" >> $GITHUB_ENV
+          echo "TEMPLATE=${{ github.event.client_payload.template }}" >> $GITHUB_ENV
 
-      - name: Build Godot Docker image
+      - name: Show paths
         run: |
-          docker build -t godot .
+          echo "Workspace:"
+          pwd
+          echo "Games:"
+          ls games
+          echo "Template:"
+          ls games/${TEMPLATE}
 
-      - name: Prepare builds directory
+      - name: Build Docker image
+        run: docker build -t godot .
+
+      - name: Prepare build directory
         run: |
-          mkdir -p builds/${GAME_NAME}
-          ls -la builds
+          mkdir -p builds/${GAME_ID}
+          ls builds
 
-      - name: Export Godot Web (capture logs)
+      - name: Export Web build
         run: |
           docker run --rm \
-            -v "$GITHUB_WORKSPACE":/project \
-            -w /project \
+            -v "${GITHUB_WORKSPACE}:/project" \
             godot \
             --headless \
             --path /project/games/${TEMPLATE} \
-            --export-release "Web" /project/builds/${GAME_NAME}/index.html \
-            > godot_export.log 2>&1 || true
+            --export-release "Web" /project/builds/${GAME_ID}/index.html
 
-      - name: Show Godot export log
+      - name: Verify output
         run: |
-          echo "===== GODOT EXPORT LOG ====="
-          tail -n 200 godot_export.log || true
+          ls -la builds/${GAME_ID}
+          test -f builds/${GAME_ID}/index.html
 
-      - name: Verify build output
+      - name: Commit build
         run: |
-          echo "Build output:"
-          ls -la builds || true
-          ls -la builds/${GAME_NAME} || true
-
-      - name: Upload debug artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: godot-build-debug
-          path: |
-            godot_export.log
-            builds/${{ env.GAME_NAME }}
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add builds/${GAME_ID}
+          git commit -m "Build ${GAME_ID}" || echo "Nothing to commit"
+          git push
