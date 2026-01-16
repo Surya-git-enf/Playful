@@ -1,14 +1,14 @@
-name: Build Godot Web Game (Docker)
+name: Build Godot Web Game (Docker + Commit)
 
 on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: "Output build folder name"
+        description: "Output build folder name (e.g. game id or friendly name)"
         required: true
         default: "runner"
       template:
-        description: "Game template folder inside /games"
+        description: "Template folder under games/ (e.g. runner)"
         required: true
         default: "runner"
 
@@ -20,73 +20,66 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # Resolve defaults from workflow inputs or repository_dispatch client_payload
+    env:
+      GAME_NAME: ${{ github.event.inputs.game_name || github.event.client_payload.game_name || github.event.client_payload.game_id }}
+      TEMPLATE:  ${{ github.event.inputs.template  || github.event.client_payload.template || 'runner' }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
 
-      - name: Set env from inputs / payload
+      - name: Show repo root & useful info (debug)
         run: |
-          # prefer repository_dispatch payload if present
-          if [ -f "$GITHUB_EVENT_PATH" ]; then
-            payload=$(cat "$GITHUB_EVENT_PATH")
-          else
-            payload=""
-          fi
-          # Basic resolution (fall back to inputs)
-          GAME_NAME="${{ github.event.inputs.game_name }}"
-          TEMPLATE="${{ github.event.inputs.template }}"
-          # If client_payload.present override
-          cp="$GITHUB_EVENT_PATH"
-          if [ -n "$cp" ] && [ -f "$cp" ]; then
-            gp=$(jq -r '.client_payload.game_name // empty' "$cp" 2>/dev/null || true)
-            gt=$(jq -r '.client_payload.template // empty' "$cp" 2>/dev/null || true)
-            if [ -n "$gp" ]; then GAME_NAME="$gp"; fi
-            if [ -n "$gt" ]; then TEMPLATE="$gt"; fi
-            # if client_payload had game_id (we use it if no game_name)
-            if [ -z "$GAME_NAME" ]; then
-              gid=$(jq -r '.client_payload.game_id // empty' "$cp" 2>/dev/null || true)
-              if [ -n "$gid" ]; then GAME_NAME="$gid"; fi
-            fi
-          fi
-          echo "GAME_NAME=$GAME_NAME" >> $GITHUB_ENV
-          echo "TEMPLATE=$TEMPLATE" >> $GITHUB_ENV
-          echo "Resolved GAME_NAME=$GAME_NAME TEMPLATE=$TEMPLATE"
+          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
+          echo "Resolved GAME_NAME=$GAME_NAME"
+          echo "Resolved TEMPLATE=$TEMPLATE"
+          pwd
+          ls -la
 
       - name: Build Docker image (godot builder)
         run: |
           docker build -t godot-builder:latest -f Dockerfile .
 
-      - name: Ensure builds dir exists
-        run: mkdir -p builds/${{ env.GAME_NAME }}
+      - name: Ensure builds folder exists
+        run: mkdir -p builds/"$GAME_NAME"
 
       - name: Run Godot export inside container
+        # run Godot inside the image; mount repo as /project so outputs are written back into workspace
+        env:
+          HOME: /root
         run: |
-          # run the container, bind-mount repo workspace to /project
+          echo "Exporting template: $TEMPLATE -> builds/$GAME_NAME"
           docker run --rm \
-            -v "$GITHUB_WORKSPACE":/project \
+            -v "${{ github.workspace }}":/project \
             -w /project \
             godot-builder:latest \
-            --headless --path /project/games/${{ env.TEMPLATE }} --export-release "Web" /project/builds/${{ env.GAME_NAME }}/index.html
-        env:
-          # ensure HOME is set in container context (templates installed under root in image)
-          HOME: /root
+            --headless --path /project/games/"$TEMPLATE" --export-release "Web" /project/builds/"$GAME_NAME"/index.html
 
-      - name: Show build contents (debug)
+      - name: Show build contents (verify)
         run: |
-          echo "Listing builds/${{ env.GAME_NAME }}:"
-          ls -la builds/${{ env.GAME_NAME }} || true
-          echo "Tail of godot export may appear above in docker run output."
+          echo "Listing builds/$GAME_NAME (if created):"
+          ls -la builds/"$GAME_NAME" || echo "No build folder found"
 
       - name: Commit build files (if any)
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add builds/${{ env.GAME_NAME }} || true
-          git commit -m "Build game: ${{ env.GAME_NAME }}" || echo "Nothing to commit"
-          git push || echo "Push failed or nothing to push"
+          if [ -d "builds/$GAME_NAME" ] && [ "$(ls -A builds/$GAME_NAME)" ]; then
+            echo "Build found — committing builds/$GAME_NAME to repo"
+            git add builds/"$GAME_NAME"
+            git commit -m "Build game: $GAME_NAME" || echo "Nothing to commit (maybe same files)"
+            # Push; rely on checkout action's persisted credentials (GITHUB_TOKEN)
+            git push || echo "git push failed (check branch protection / permissions)"
+          else
+            echo "No build output to commit for builds/$GAME_NAME"
+          fi
 
-      - name: Upload artifact (optional)
-        if: success()
+      - name: Upload build artifact (fallback)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: godot-build-${{ env.GAME_NAME }}
