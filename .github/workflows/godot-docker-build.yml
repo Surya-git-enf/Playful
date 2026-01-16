@@ -1,29 +1,25 @@
-name: Build Godot Web Game (Docker + Commit)
+name: Debug Godot Web Export (capture logs + artifacts)
 
 on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: "Output build folder name (e.g. game id or friendly name)"
+        description: "Output build folder name (game id or friendly)"
         required: true
         default: "runner"
       template:
-        description: "Template folder under games/ (e.g. runner)"
+        description: "Template folder under games/"
         required: true
         default: "runner"
 
-  repository_dispatch:
-    types: [build_game]
-
 jobs:
-  build:
+  debug-build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    # Resolve defaults from workflow inputs or repository_dispatch client_payload
     env:
-      GAME_NAME: ${{ github.event.inputs.game_name || github.event.client_payload.game_name || github.event.client_payload.game_id }}
-      TEMPLATE:  ${{ github.event.inputs.template  || github.event.client_payload.template || 'runner' }}
+      GAME_NAME: ${{ github.event.inputs.game_name }}
+      TEMPLATE: ${{ github.event.inputs.template }}
 
     steps:
       - name: Checkout repository
@@ -32,55 +28,126 @@ jobs:
           persist-credentials: true
           fetch-depth: 0
 
-      - name: Show repo root & useful info (debug)
+      - name: Show workspace info (debug)
         run: |
           echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
           echo "Resolved GAME_NAME=$GAME_NAME"
           echo "Resolved TEMPLATE=$TEMPLATE"
           pwd
+          echo "Repo root listing:"
           ls -la
+          echo "games folder listing (if exists):"
+          ls -la games || true
+          echo "template folder listing (if exists):"
+          ls -la "games/$TEMPLATE" || true
+          echo "project.godot head (if exists):"
+          sed -n '1,120p' "games/$TEMPLATE/project.godot" || true
+          echo "export_presets.cfg head (if exists):"
+          sed -n '1,200p' "games/$TEMPLATE/export_presets.cfg" || true
+          echo "main.tscn head (if exists):"
+          sed -n '1,200p' "games/$TEMPLATE/main.tscn" || true
 
-      - name: Build Docker image (godot builder)
+      - name: Build Docker image (godot-builder)
         run: |
           docker build -t godot-builder:latest -f Dockerfile .
+        # if this fails, you'll see the docker build log in Actions
 
-      - name: Ensure builds folder exists
-        run: mkdir -p builds/"$GAME_NAME"
-
-      - name: Run Godot export inside container
-        # run Godot inside the image; mount repo as /project so outputs are written back into workspace
-        env:
-          HOME: /root
+      - name: Verify godot binary & templates inside image
         run: |
-          echo "Exporting template: $TEMPLATE -> builds/$GAME_NAME"
+          echo "Check godot version inside image:"
+          # use entrypoint (godot) to print version
+          docker run --rm godot-builder:latest --version || true
+
+          echo "List export templates inside image (root home):"
+          docker run --rm --entrypoint /bin/sh godot-builder:latest -c "ls -la /root/.local/share/godot || true; echo '---- export_templates dir ----'; ls -la /root/.local/share/godot/export_templates || true"
+
+      - name: Ensure builds dir exists (workspace)
+        run: |
+          mkdir -p builds
+          ls -la builds || true
+
+      - name: Run Godot export (method A: export-release -> index.html) and capture logs
+        run: |
+          echo "Running export-release to builds/$GAME_NAME/index.html (method A)..."
+          # run and capture all stdout/stderr into godot_export_log.txt in workspace
           docker run --rm \
             -v "${{ github.workspace }}":/project \
             -w /project \
             godot-builder:latest \
-            --headless --path /project/games/"$TEMPLATE" --export-release "Web" /project/builds/"$GAME_NAME"/index.html
+            --headless --path /project/games/"$TEMPLATE" --export-release "Web" /project/builds/"$GAME_NAME"/index.html \
+            > godot_export_log.txt 2>&1 || true
 
-      - name: Show build contents (verify)
-        run: |
-          echo "Listing builds/$GAME_NAME (if created):"
-          ls -la builds/"$GAME_NAME" || echo "No build folder found"
+          echo "=== tail of godot_export_log.txt (method A) ==="
+          tail -n 200 godot_export_log.txt || true
 
-      - name: Commit build files (if any)
+      - name: Check build output after method A
         run: |
+          echo "Listing builds/$GAME_NAME after method A export:"
+          ls -la builds/"$GAME_NAME" || echo "No files created by method A."
+
+      - name: If no index.html, try method B: export to zip (captures logs)
+        run: |
+          if [ -f "builds/$GAME_NAME/index.html" ]; then
+            echo "index.html present, skipping method B."
+            exit 0
+          fi
+          echo "Method A produced no index.html — trying export to builds/$GAME_NAME.zip (method B)..."
+          docker run --rm \
+            -v "${{ github.workspace }}":/project \
+            -w /project \
+            godot-builder:latest \
+            --headless --path /project/games/"$TEMPLATE" --export "Web" /project/builds/"$GAME_NAME".zip \
+            >> godot_export_log.txt 2>&1 || true
+
+          echo "=== tail of godot_export_log.txt (after method B) ==="
+          tail -n 200 godot_export_log.txt || true
+
+      - name: Unpack zip if produced and list
+        run: |
+          if [ -f "builds/$GAME_NAME.zip" ]; then
+            echo "Found builds/$GAME_NAME.zip — unpacking to builds/$GAME_NAME_unpacked"
+            mkdir -p builds/"$GAME_NAME"_unpacked
+            unzip -l builds/"$GAME_NAME".zip || true
+            unzip -o builds/"$GAME_NAME".zip -d builds/"$GAME_NAME"_unpacked || true
+            ls -la builds/"$GAME_NAME"_unpacked || true
+          else
+            echo "No zip produced."
+          fi
+
+      - name: Show final builds folder(s)
+        run: |
+          echo "Listing builds (root):"
+          ls -la builds || true
+          echo "Listing builds/$GAME_NAME:"
+          ls -la builds/"$GAME_NAME" || true
+          echo "Listing builds/${GAME_NAME}_unpacked:"
+          ls -la builds/"${GAME_NAME}"_unpacked || true
+
+      - name: Upload Godot export log & builds (artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: godot-debug-${{ env.GAME_NAME }}
+          path: |
+            godot_export_log.txt
+            builds/${{ env.GAME_NAME }}
+            builds/${{ env.GAME_NAME }}.zip
+            builds/${{ env.GAME_NAME }}_unpacked
+
+      - name: Commit build files if any (safe)
+        run: |
+          # commit only if dir has files
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           if [ -d "builds/$GAME_NAME" ] && [ "$(ls -A builds/$GAME_NAME)" ]; then
-            echo "Build found — committing builds/$GAME_NAME to repo"
+            echo "Found builds/$GAME_NAME contents — committing"
             git add builds/"$GAME_NAME"
-            git commit -m "Build game: $GAME_NAME" || echo "Nothing to commit (maybe same files)"
-            # Push; rely on checkout action's persisted credentials (GITHUB_TOKEN)
-            git push || echo "git push failed (check branch protection / permissions)"
+            git commit -m "CI: Build game $GAME_NAME" || echo "Nothing to commit"
+            git push || echo "Push failed (branch protection or permission)."
+          elif [ -f "builds/$GAME_NAME.zip" ]; then
+            echo "Found zip builds/$GAME_NAME.zip — committing zip"
+            git add builds/"$GAME_NAME.zip"
+            git commit -m "CI: Build game zip $GAME_NAME" || echo "Nothing to commit"
+            git push || echo "Push failed (branch protection or permission)."
           else
-            echo "No build output to commit for builds/$GAME_NAME"
+            echo "No build files to commit."
           fi
-
-      - name: Upload build artifact (fallback)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: godot-build-${{ env.GAME_NAME }}
-          path: builds/${{ env.GAME_NAME }}
