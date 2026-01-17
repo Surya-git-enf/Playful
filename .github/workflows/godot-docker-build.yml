@@ -1,4 +1,4 @@
-name: Build Godot Web Game
+name: Build Godot Web Game (Safe)
 
 on:
   workflow_dispatch:
@@ -8,30 +8,23 @@ on:
         required: true
         default: "runner"
       template:
-        description: "Game folder inside games/"
+        description: "Template folder inside games/"
         required: true
         default: "runner"
-
-  repository_dispatch:
-    types: [build_game]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
-    steps:
-      # 1️⃣ Checkout repo
+steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install system deps
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip
+          sudo apt-get install -y wget unzip python3 libglu1-mesa libfontconfig1
 
-      # 3️⃣ Install Godot 4.2.1
-      - name: Install Godot
+      - name: Download Godot 4.2.1
         run: |
           wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
           unzip Godot_v4.2.1-stable_linux.x86_64.zip
@@ -39,7 +32,6 @@ jobs:
           sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
           godot --version
 
-      # 4️⃣ Install export templates
       - name: Install export templates
         run: |
           mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
@@ -48,38 +40,41 @@ jobs:
           mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
           rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
 
-      # 5️⃣ Resolve variables (manual OR backend)
-      - name: Resolve variables
+      - name: Prepare project
         run: |
-          GAME_NAME="${{ github.event.inputs.game_name || github.event.client_payload.game_id }}"
-          TEMPLATE="${{ github.event.inputs.template || github.event.client_payload.template }}"
-          echo "GAME_NAME=$GAME_NAME" >> $GITHUB_ENV
-          echo "TEMPLATE=$TEMPLATE" >> $GITHUB_ENV
+          mkdir -p build_work
+          cp -r games/${{ github.event.inputs.template }}/* build_work/
 
-      # 6️⃣ Export Web build
-      - name: Export Web
+      - name: Fix export_presets.cfg
         run: |
-          mkdir -p builds/$GAME_NAME
-          godot --headless \
-            --path games/$TEMPLATE \
-            --export-release "Web"
+          cat > build_work/export_presets.cfg <<'EOF'
+[preset.0]
+name="Web"
+platform="Web"
+runnable=true
+export_filter="all_resources"
+include_filter=""
+exclude_filter=""
 
-      # 7️⃣ Move build output
-      - name: Move build files
+[preset.0.options]
+html/threads=false
+EOF
+
+      - name: Export Web build
         run: |
-          mv games/$TEMPLATE/build/* builds/$GAME_NAME/
+          mkdir -p builds/${{ github.event.inputs.game_name }}
+          godot --headless --path build_work --export "Web" builds/${{ github.event.inputs.game_name }}
 
-      # 8️⃣ Verify output
-      - name: Verify build
+      - name: Show build files
         run: |
-          echo "===== BUILD OUTPUT ====="
-          ls -R builds/$GAME_NAME
+          ls -R builds
 
-      # 9️⃣ Commit build to repo
       - name: Commit build
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add builds
-          git commit -m "Web build: $GAME_NAME" || echo "Nothing to commit"
+          git commit -m "Web build" || echo "Nothing to commit"
           git push
+          
+    
