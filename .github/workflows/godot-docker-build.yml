@@ -1,42 +1,68 @@
-name: Godot Web Export (Minimal)
+name: Build Godot Web Game
 
 on:
   workflow_dispatch:
+    inputs:
+      game_name:
+        description: "Build folder name"
+        required: true
+        default: "runner"
+      template:
+        description: "Game folder inside games/"
+        required: true
+        default: "runner"
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      # 1️⃣ Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install deps
+      # 2️⃣ Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget unzip
 
+      # 3️⃣ Install Godot 4.2.1 (NON-MONO)
       - name: Install Godot
         run: |
           wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_linux.x86_64.zip
           unzip Godot_v4.2.1-stable_linux.x86_64.zip
           chmod +x Godot_v4.2.1-stable_linux.x86_64
           sudo mv Godot_v4.2.1-stable_linux.x86_64 /usr/local/bin/godot
+          godot --version
 
+      # 4️⃣ Install export templates
       - name: Install export templates
         run: |
           mkdir -p ~/.local/share/godot/export_templates/4.2.1.stable
           wget https://github.com/godotengine/godot/releases/download/4.2.1-stable/Godot_v4.2.1-stable_export_templates.tpz
           unzip Godot_v4.2.1-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.2.1.stable
           mv ~/.local/share/godot/export_templates/4.2.1.stable/templates/* ~/.local/share/godot/export_templates/4.2.1.stable/
+          rm -rf ~/.local/share/godot/export_templates/4.2.1.stable/templates
 
-      - name: Export PACK only (safe)
+      # 5️⃣ Prepare build folder (IMPORTANT)
+      - name: Prepare build folder
         run: |
-          mkdir -p builds
-          godot --headless \
-            --path games/runner \
-            --export-pack "Web" builds/runner.pck
-
-      - name: Verify
-        run: |
+          mkdir -p builds/runner
+          chmod -R 777 builds
           ls -la builds
+
+      # 6️⃣ Export Web build
+      - name: Export Web
+        run: |
+          godot \
+            --headless \
+            --path games/runner \
+            --export-release "Web" \
+            builds/runner/index.html
+
+      # 7️⃣ Verify output
+      - name: Verify build output
+        run: |
+          echo "=== BUILT FILES ==="
+          ls -la builds/runner
