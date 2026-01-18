@@ -1,17 +1,18 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
-[ext_resource type="Script" path="res://player.gd" id="1"]
+[ext_resource type="Script" path="res://player.gd" id=1]
+
+[sub_resource type="RectangleShape2D" id=1]
+size = Vector2(800, 40)
 
 [node name="Main" type="Node2D"]
 
 [node name="Player" type="CharacterBody2D" parent="."]
 position = Vector2(50, 200)
-script = ExtResource("1")
+script = ExtResource(1)
 
 [node name="Ground" type="StaticBody2D" parent="."]
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="Ground"]
-shape = RectangleShape2D {
-    size = Vector2(800, 40)
-}
+shape = SubResource(1)
 position = Vector2(400, 300)
