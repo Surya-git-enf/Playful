@@ -5,61 +5,51 @@
   <title>Babylon Car Game - Playable</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="styles.css" />
-  <!-- Babylon core -->
+  <!-- Babylon core (global) -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
-  <!-- Cannon.js physics plugin -->
+  <!-- Cannon physics (global) -->
   <script src="https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js"></script>
   <style>
-    /* quick safety: ensure body/html same as styles.css but inline so no CSS timing issues */
-    html,body { height:100%; width:100%; margin:0; padding:0; overflow:hidden; background:#0b1220; }
+    /* ensure overlay & debug visible immediately */
+    #debug {
+      position: fixed;
+      left: 12px;
+      bottom: 90px;
+      z-index: 9999;
+      background: rgba(0,0,0,0.55);
+      color: #fff;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 12px;
+      max-width: 45%;
+      max-height: 40%;
+      overflow:auto;
+    }
   </style>
 </head>
 <body>
   <canvas id="renderCanvas"></canvas>
 
-  <!-- UI: small transparent buttons (mobile friendly) -->
-  <div id="ui" aria-hidden="false">
+  <!-- UI -->
+  <div id="ui">
     <button id="leftBtn" aria-label="left">◀</button>
     <button id="rightBtn" aria-label="right">▶</button>
     <button id="accBtn" aria-label="accelerate">▲</button>
     <button id="brakeBtn" aria-label="brake">▼</button>
   </div>
 
-  <!-- HUD: speedometer + distance + timer -->
+  <!-- HUD -->
   <div id="hud">
     <div id="speed">0 km/h</div>
     <div id="distance">0 m</div>
     <div id="timer">00:00</div>
   </div>
 
-  <!-- overlay and start -->
-  <div id="overlay" role="dialog" aria-modal="true">
-    <button id="startBtn" class="start">Start Game (Fullscreen)</button>
-  </div>
+  <!-- Debug box (visible) -->
+  <div id="debug">debug: waiting...</div>
 
-  <!-- fallback click binding: will call global start function if main.js hasn't attached yet -->
-  <script>
-    // Make sure the overlay button ALWAYS triggers start logic, even before main.js attaches.
-    (function(){
-      const startBtn = document.getElementById('startBtn');
-      function doStart() {
-        // if main provided a start function, call it; otherwise toggle overlay hidden so user sees canvas
-        if (window.__start && typeof window.__start === 'function') {
-          window.__start();
-        } else {
-          // hide overlay as a graceful fallback (will let user see canvas)
-          document.getElementById('overlay').style.display = 'none';
-          // try to resume any audio context (if created later)
-          try { if (window.__resumeAudio && typeof window.__resumeAudio === 'function') window.__resumeAudio(); } catch(e){}
-        }
-      }
-      // desktop click
-      startBtn.addEventListener('click', (e) => { e.preventDefault(); doStart(); }, { passive: false });
-      // mobile touchstart (fast)
-      startBtn.addEventListener('touchstart', (e) => { e.preventDefault(); doStart(); }, { passive: false });
-    })();
-  </script>
-
+  <!-- main script (non-module) -->
   <script src="src/main.js"></script>
 </body>
 </html>
