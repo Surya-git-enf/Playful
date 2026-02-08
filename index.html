@@ -2,54 +2,36 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Babylon Car Game - Playable</title>
+  <title>Babylon Car Simulator</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="styles.css" />
   <!-- Babylon core (global) -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
-  <!-- Cannon physics (global) -->
+  <!-- Cannon.js physics (global) -->
   <script src="https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js"></script>
-  <style>
-    /* ensure overlay & debug visible immediately */
-    #debug {
-      position: fixed;
-      left: 12px;
-      bottom: 90px;
-      z-index: 9999;
-      background: rgba(0,0,0,0.55);
-      color: #fff;
-      padding: 8px 10px;
-      border-radius: 8px;
-      font-family: monospace;
-      font-size: 12px;
-      max-width: 45%;
-      max-height: 40%;
-      overflow:auto;
-    }
-  </style>
 </head>
 <body>
   <canvas id="renderCanvas"></canvas>
 
-  <!-- UI -->
-  <div id="ui">
-    <button id="leftBtn" aria-label="left">◀</button>
-    <button id="rightBtn" aria-label="right">▶</button>
-    <button id="accBtn" aria-label="accelerate">▲</button>
-    <button id="brakeBtn" aria-label="brake">▼</button>
-  </div>
-
   <!-- HUD -->
   <div id="hud">
     <div id="speed">0 km/h</div>
-    <div id="distance">0 m</div>
+    <div id="gear">Drive</div>
     <div id="timer">00:00</div>
   </div>
 
-  <!-- Debug box (visible) -->
-  <div id="debug">debug: waiting...</div>
+  <!-- touch controls -->
+  <div id="controls">
+    <button id="leftBtn">◀</button>
+    <button id="rightBtn">▶</button>
+    <button id="accBtn">▲</button>
+    <button id="brakeBtn">▼</button>
+    <button id="driftBtn">DRIFT</button>
+  </div>
 
-  <!-- main script (non-module) -->
+  <!-- debug (hidden by default) -->
+  <pre id="debug" aria-hidden="true"></pre>
+
   <script src="src/main.js"></script>
 </body>
 </html>
