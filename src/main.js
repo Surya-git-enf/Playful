@@ -1,521 +1,299 @@
-// src/main.js - Robust 2D car simulator (improved)
-// Arcade-but-realistic physics, collisions, drift, obstacles, buildings, sound (synth).
-(function () {
-  // DOM
+// src/main3d.js
+// 3D car game — Try Babylon + Cannon RaycastVehicle; fallback to kinematic 3D if physics not available.
+// Non-module script; will run on GitHub Pages / mobile. Keep in single file for easy copy/paste.
+
+(function(){
   const canvas = document.getElementById('renderCanvas');
-  const speedEl = document.getElementById('speed');
-  const distEl = document.getElementById('distance');
-  const timerEl = document.getElementById('timer');
   const debugEl = document.getElementById('debug');
+  const modeEl = document.getElementById('mode');
+  const speedEl = document.getElementById('speed');
+  const timerEl = document.getElementById('timer');
+  const startBtn = document.getElementById('startBtn');
 
-  // Resize canvas to device pixels
-  function resize() {
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(window.innerWidth * dpr);
-    canvas.height = Math.floor(window.innerHeight * dpr);
-    canvas.style.width = window.innerWidth + 'px';
-    canvas.style.height = window.innerHeight + 'px';
+  function dbg(...a){ try { debugEl.style.display = 'block'; debugEl.innerText += a.join(' ') + '\n'; debugEl.scrollTop = debugEl.scrollHeight; } catch(e){ console.log(...a); } }
+
+  // Controls
+  const input = {left:false,right:false,accel:false,brake:false,drift:false};
+  function wireBtn(id, prop){
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('touchstart', e=>{ input[prop]=true; e.preventDefault(); }, {passive:false});
+    el.addEventListener('touchend',   e=>{ input[prop]=false; e.preventDefault(); }, {passive:false});
+    el.addEventListener('mousedown', e=>{ input[prop]=true; });
+    el.addEventListener('mouseup',   e=>{ input[prop]=false; });
   }
-  window.addEventListener('resize', resize);
-  resize();
-
-  const ctx = canvas.getContext('2d', { alpha: false });
-  if (!ctx) {
-    if (debugEl) debugEl.style.display = 'block';
-    console.error('Canvas 2D not supported.');
-    return;
-  }
-
-  // Debug helper
-  function dbg(msg) {
-    if (!debugEl) return;
-    debugEl.style.display = 'block';
-    debugEl.innerText += msg + '\n';
-    debugEl.scrollTop = debugEl.scrollHeight;
-    console.log(msg);
-  }
-
-  // Input state
-  const input = { left: false, right: false, accel: false, brake: false, drift: false };
-  window.addEventListener('keydown', (e) => {
+  wireBtn('leftBtn','left'); wireBtn('rightBtn','right'); wireBtn('accBtn','accel'); wireBtn('brakeBtn','brake'); wireBtn('driftBtn','drift');
+  window.addEventListener('keydown', e=>{
     if (e.key === 'ArrowLeft' || e.key === 'a') input.left = true;
     if (e.key === 'ArrowRight' || e.key === 'd') input.right = true;
     if (e.key === 'ArrowUp' || e.key === 'w') input.accel = true;
     if (e.key === 'ArrowDown' || e.key === 's') input.brake = true;
-    if (e.key === ' ' || e.key === 'Spacebar') input.drift = true;
+    if (e.key === ' ') input.drift = true;
   });
-  window.addEventListener('keyup', (e) => {
+  window.addEventListener('keyup', e=>{
     if (e.key === 'ArrowLeft' || e.key === 'a') input.left = false;
     if (e.key === 'ArrowRight' || e.key === 'd') input.right = false;
     if (e.key === 'ArrowUp' || e.key === 'w') input.accel = false;
     if (e.key === 'ArrowDown' || e.key === 's') input.brake = false;
-    if (e.key === ' ' || e.key === 'Spacebar') input.drift = false;
+    if (e.key === ' ') input.drift = false;
   });
 
-  // Touch/mouse buttons wiring
-  function wireBtn(id, prop) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('touchstart', (ev) => { input[prop] = true; ev.preventDefault(); }, { passive: false });
-    el.addEventListener('touchend', (ev) => { input[prop] = false; ev.preventDefault(); }, { passive: false });
-    el.addEventListener('mousedown', (ev) => { input[prop] = true; ev.preventDefault(); });
-    el.addEventListener('mouseup', (ev) => { input[prop] = false; ev.preventDefault(); });
-    el.addEventListener('mouseleave', (ev) => { input[prop] = false; });
-  }
-  wireBtn('leftBtn', 'left');
-  wireBtn('rightBtn', 'right');
-  wireBtn('accBtn', 'accel');
-  wireBtn('brakeBtn', 'brake');
-  wireBtn('driftBtn', 'drift');
+  // Start button: fullscreen + resume audio if needed
+  startBtn.addEventListener('click', async ()=>{
+    try { await canvas.requestFullscreen(); } catch(e){}
+    startBtn.style.display = 'none';
+  });
 
-  // Audio (simple synth for engine + crash)
-  let audioCtx = null;
-  let engineOsc = null;
-  let engineGain = null;
-  let crashGain = null;
-  function initAudio() {
-    if (audioCtx) return;
+  // Wait for Babylon global
+  function waitBabylon(cb, tries=0){
+    if (window.BABYLON) return cb();
+    if (tries > 60) return cb(new Error('Babylon not found'));
+    setTimeout(()=> waitBabylon(cb, tries+1), 80);
+  }
+
+  waitBabylon(init);
+
+  function init(err){
+    if (err) { dbg('Babylon not loaded — aborting 3D init.'); return; }
+    const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer:true, stencil:true });
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color3(0.48,0.75,0.95);
+
+    // Camera + lights
+    const camera = new BABYLON.FollowCamera('follow', new BABYLON.Vector3(0,5,-12), scene);
+    camera.radius = 14; camera.heightOffset = 4; camera.rotationOffset = 180; camera.cameraAcceleration = 0.05;
+    const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0,1,0), scene);
+    hemi.intensity = 0.9;
+    const sun = new BABYLON.DirectionalLight('sun', new BABYLON.Vector3(-0.4,-1,-0.3), scene); sun.position = new BABYLON.Vector3(40,80,40);
+
+    // environment
+    const ground = BABYLON.MeshBuilder.CreateGround('ground', {width:1600, height:1600}, scene);
+    const gm = new BABYLON.StandardMaterial('gm', scene); gm.diffuseColor = new BABYLON.Color3(0.13,0.45,0.12); ground.material = gm;
+    ground.receiveShadows = true;
+
+    // road
+    const roadW = 12;
+    const road = BABYLON.MeshBuilder.CreateGround('road', {width: roadW, height: 2000}, scene);
+    road.position.y = 0.02; road.position.z = 600;
+    const rm = new BABYLON.StandardMaterial('rm', scene); rm.diffuseColor = new BABYLON.Color3(0.06,0.06,0.06); road.material = rm;
+
+    // lane dividers
+    for (let i=0;i<120;i++){
+      const d = BABYLON.MeshBuilder.CreateBox('div'+i, {width:0.15, height:0.01, depth: 2}, scene);
+      d.position = new BABYLON.Vector3(0, 0.02, i*16 + 20);
+      d.material = new BABYLON.StandardMaterial('divm'+i, scene);
+      d.material.diffuseColor = new BABYLON.Color3(1,1,1);
+    }
+
+    // roadside buildings & trees
+    function addBuilding(x,z,w,h){
+      const b = BABYLON.MeshBuilder.CreateBox('b'+x+z, {width:w, height:h, depth: Math.max(8,w/2)}, scene);
+      b.position = new BABYLON.Vector3(x, h/2, z);
+      const m = new BABYLON.StandardMaterial('bm'+x+z, scene);
+      m.diffuseColor = new BABYLON.Color3(0.2 + Math.random()*0.4, 0.2, 0.2 + Math.random()*0.4);
+      b.material = m;
+      b.receiveShadows = true;
+      b.checkCollisions = true;
+    }
+    for (let i=0;i<40;i++){
+      const z = 40 + i*60 + Math.random()*30;
+      addBuilding(-20 - Math.random()*18, z, 10 + Math.random()*20, 12 + Math.random()*40);
+      addBuilding(20 + Math.random()*18, z, 10 + Math.random()*20, 12 + Math.random()*40);
+    }
+
+    function addTree(x,z){
+      const trunk = BABYLON.MeshBuilder.CreateCylinder('t'+x+z, {height:3, diameterTop:0.6, diameterBottom:0.6}, scene);
+      trunk.position = new BABYLON.Vector3(x, 1.5, z);
+      const leaves = BABYLON.MeshBuilder.CreateSphere('l'+x+z, {diameter:2.5}, scene);
+      leaves.position = new BABYLON.Vector3(x, 3.2, z);
+      const tm = new BABYLON.StandardMaterial('tm'+x+z, scene); tm.diffuseColor = new BABYLON.Color3(0.46,0.7,0.26);
+      leaves.material = tm;
+      trunk.material = new BABYLON.StandardMaterial('trm'+x+z, scene); trunk.material.diffuseColor = new BABYLON.Color3(0.35,0.18,0.06);
+    }
+    for (let i=0;i<40;i++){
+      addTree(-38, 40 + i*45 + (Math.random()*20-10));
+      addTree(38, 40 + i*45 + (Math.random()*20-10));
+    }
+
+    // car meshes (chassis + wheels)
+    const chassis = BABYLON.MeshBuilder.CreateBox('chassis', {width: 2.2, height:0.6, depth:4.4}, scene);
+    chassis.position = new BABYLON.Vector3(0,1.6, 0);
+    const chMat = new BABYLON.StandardMaterial('chm', scene); chMat.diffuseColor = new BABYLON.Color3(0.9,0.12,0.12);
+    chassis.material = chMat;
+    chassis.receiveShadows = true; chassis.checkCollisions = true;
+
+    const makeWheel = (name) => {
+      const w = BABYLON.MeshBuilder.CreateCylinder(name, {diameter:0.7, height:0.36, tessellation:24}, scene);
+      w.rotation.z = Math.PI/2; w.material = new BABYLON.StandardMaterial(name+'m', scene); w.material.diffuseColor = new BABYLON.Color3(0.08,0.08,0.08);
+      return w;
+    };
+
+    const wFL = makeWheel('wFL'); const wFR = makeWheel('wFR'); const wBL = makeWheel('wBL'); const wBR = makeWheel('wBR');
+
+    // shadow generator (for nicer visuals)
+    const shadowGen = new BABYLON.ShadowGenerator(2048, sun);
+    shadowGen.addShadowCaster(chassis);
+    [wFL,wFR,wBL,wBR].forEach(w=>shadowGen.addShadowCaster(w));
+    shadowGen.useBlurExponentialShadowMap = true;
+
+    // Try enabling physics with Cannon and RaycastVehicle. If it fails, fallback to kinematic vehicle.
+    let physicsEnabled = false;
+    let vehicle = null;
+
     try {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      engineOsc = audioCtx.createOscillator();
-      engineOsc.type = 'sawtooth';
-      engineOsc.frequency.value = 90;
-      engineGain = audioCtx.createGain();
-      engineGain.gain.value = 0;
-      engineOsc.connect(engineGain);
-      engineGain.connect(audioCtx.destination);
-      engineOsc.start();
+      if (window.CANNON) {
+        const cannonPlugin = new BABYLON.CannonJSPlugin();
+        scene.enablePhysics(new BABYLON.Vector3(0,-9.82,0), cannonPlugin);
+        // prepare chassis physics (we will rely on RaycastVehicle)
+        chassis.physicsImpostor = new BABYLON.PhysicsImpostor(chassis, BABYLON.PhysicsImpostor.BoxImpostor, { mass:350 }, scene);
 
-      crashGain = audioCtx.createGain();
-      crashGain.gain.value = 0;
-      crashGain.connect(audioCtx.destination);
-    } catch (e) {
-      dbg('Audio init failed: ' + e.message);
-    }
-  }
-  // resume on first user interaction
-  ['touchstart', 'mousedown', 'keydown'].forEach(evt => {
-    window.addEventListener(evt, () => { if (!audioCtx) initAudio(); }, { once: true, passive: true });
-  });
+        // create raycast vehicle
+        vehicle = new BABYLON.RaycastVehicle({ chassisMesh: chassis, indexRightAxis: 0, indexUpAxis: 1, indexForwardAxis: 2 }, scene);
 
-  function setEngineTone(power) {
-    if (!engineGain || !engineOsc) return;
-    const targetGain = Math.min(0.45, 0.05 + power * 0.7);
-    engineGain.gain.linearRampToValueAtTime(targetGain, audioCtx.currentTime + 0.05);
-    engineOsc.frequency.linearRampToValueAtTime(80 + power * 420, audioCtx.currentTime + 0.05);
-  }
-  function playCrash() {
-    if (!audioCtx || !crashGain) return;
-    const o = audioCtx.createOscillator();
-    o.type = 'square';
-    o.frequency.value = 140;
-    o.connect(crashGain);
-    crashGain.gain.cancelScheduledValues(audioCtx.currentTime);
-    crashGain.gain.setValueAtTime(0.001, audioCtx.currentTime);
-    crashGain.gain.exponentialRampToValueAtTime(0.4, audioCtx.currentTime + 0.02);
-    crashGain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.35);
-    o.start();
-    o.stop(audioCtx.currentTime + 0.35);
-  }
-
-  // World geometry + visuals
-  let W = canvas.width, H = canvas.height;
-  function updateWH() { W = canvas.width; H = canvas.height; }
-  updateWH();
-
-  // Car state (center-bottom view)
-  const car = {
-    px: W / 2,
-    py: H * 0.7,
-    angle: 0,           // radians (0 = forward/up the screen)
-    speed: 0,
-    width: Math.max(54, W * 0.08),
-    height: Math.max(110, H * 0.16),
-    wheelAng: 0,
-    wheelRot: 0,
-    crashed: false
-  };
-
-  // Road & environment state
-  let world = {
-    offsetZ: 0,
-    roadW: Math.max( Math.min( W * 0.45, 700 ), 220),
-    buildings: [],
-    trees: [],
-    obstacles: []
-  };
-
-  // Populate buildings/trees/obstacles along road
-  function seedWorld() {
-    world.buildings = [];
-    world.trees = [];
-    world.obstacles = [];
-    for (let i = 0; i < 80; i++) {
-      const z = i * 200 + 80;
-      world.buildings.push({ side: -1, x: - (world.roadW / 2) - 140 - Math.random() * 40, z, w: 80 + Math.random()*120, h: 80 + Math.random()*180 });
-      world.buildings.push({ side: 1, x: (world.roadW / 2) + 60 + Math.random() * 40, z, w: 80 + Math.random()*120, h: 80 + Math.random()*180 });
-      // trees near road
-      world.trees.push({ x: - (world.roadW / 2) - 60, z: z + (Math.random()*60-30), size: 18 + Math.random()*14 });
-      world.trees.push({ x: (world.roadW / 2) + 100, z: z + (Math.random()*60-30), size: 18 + Math.random()*14 });
-      // obstacles occasionally
-      if (Math.random() < 0.22) {
-        const ox = (Math.random() * (world.roadW - 120)) - (world.roadW/2 - 60);
-        world.obstacles.push({ x: ox, z: z + 40, w: 36 + Math.random()*40, h: 36 + Math.random()*40, hit: false });
-      }
-    }
-  }
-  seedWorld();
-
-  // Collision helper (rect collision in screen coords)
-  function rectsIntersect(ax, ay, aw, ah, bx, by, bw, bh) {
-    return !(bx > ax + aw || bx + bw < ax || by > ay + ah || by + bh < ay);
-  }
-
-  // Controls physics parameters (tweak these for realism)
-  const PARAM = {
-    ACC: 0.45,             // acceleration per second (pixels/frame scale)
-    BRAKE: 1.8,
-    MAX_SPEED: 22,        // top speed (tuned for feeling)
-    FRICTION: 0.985,
-    STEER_BASE: 0.038,    // base steering per frame
-    STEER_SPEED_SCALE: 0.015,
-    DRIFT_SLIDE: 0.16,    // lateral slide factor when drifting
-    COLLIDE_SLOW: 0.28    // slow factor on collision
-  };
-
-  // HUD stats
-  let distanceMeters = 0;
-  const pxToMeters = 0.2; // for display only (arbitrary)
-  let startTime = performance.now();
-
-  // Resize response
-  function onResize() {
-    resize();
-    updateWH();
-    car.width = Math.max(54, W * 0.08);
-    car.height = Math.max(110, H * 0.16);
-    world.roadW = Math.max( Math.min( W * 0.45, 700 ), 220);
-  }
-  window.addEventListener('resize', onResize);
-
-  // Game loop
-  let last = performance.now();
-  function loop(now) {
-    const dt = Math.min(0.04, (now - last) / 1000);
-    last = now;
-
-    // update world offset based on car speed (simulate forward motion)
-    const sp = car.speed;
-    world.offsetZ += sp * dt * 60; // scale to get visible motion
-    distanceMeters += Math.max(0, sp) * dt * pxToMeters * 10;
-
-    // Input -> physics
-    if (input.accel && !car.crashed) {
-      car.speed += PARAM.ACC * dt * 60;
-    } else if (input.brake && !car.crashed) {
-      car.speed -= PARAM.BRAKE * dt * 60;
-    } else {
-      car.speed *= PARAM.FRICTION;
-    }
-    // clamp
-    car.speed = Math.max(-PARAM.MAX_SPEED/2, Math.min(PARAM.MAX_SPEED, car.speed));
-
-    // steering: effect scales with speed
-    const steerEffect = PARAM.STEER_BASE * (1 + Math.min(2.2, Math.abs(car.speed) / 6));
-    if (input.left) car.wheelAng = Math.max(-0.7, car.wheelAng - steerEffect);
-    else if (input.right) car.wheelAng = Math.min(0.7, car.wheelAng + steerEffect);
-    else car.wheelAng *= 0.92; // self center
-
-    // angle change: steering + drift
-    let steerTurn = car.wheelAng * (0.018 + Math.abs(car.speed) * PARAM.STEER_SPEED_SCALE);
-    if (car.speed < 0) steerTurn *= -1; // reverse steering direction when reversing
-
-    // drift effect: lateral slide
-    let lateralSlide = 0;
-    const isDrifting = input.drift && Math.abs(car.speed) > 6;
-    if (isDrifting) {
-      lateralSlide = Math.sign(car.wheelAng || 0) * PARAM.DRIFT_SLIDE * Math.min(1, Math.abs(car.speed)/18);
-    }
-
-    car.angle += steerTurn;
-    // forward movement mapped to screen: forward moves the background (world) and car has slight sway
-    // We keep car visually steady but allow slight lateral "slip" to simulate drift
-    // wheelRot for animation
-    car.wheelRot += car.speed * 0.12;
-
-    // Collision detection with obstacles (project obstacle z -> screen Y roughly)
-    // For each active obstacle, compute screen position and test intersection with car rect
-    const carRect = {
-      w: car.width,
-      h: car.height,
-      x: car.px - car.width/2,
-      y: car.py - car.height/2
-    };
-
-    // update obstacles list: remove far past obstacles for performance
-    // but we need them for collisions until passed
-    for (const obs of world.obstacles) {
-      const relZ = obs.z - world.offsetZ;
-      // screen Y mapping: objects with smaller relZ are closer to bottom (bigger Y)
-      // We'll compute screen y = base + scale * relZ
-      // Keep consistent mapping: z from 0..2000 maps to y from some range
-    }
-
-    // Collision check loop
-    for (const obs of world.obstacles) {
-      if (obs.hit) continue;
-      const relZ = obs.z - world.offsetZ;
-      if (relZ < -300) continue; // passed long ago
-      // map relZ to screen Y
-      const perspective = 1 - Math.max(0, Math.min(1, (relZ) / 1200)); // 1 near, 0 far
-      const roadCenterX = W/2;
-      const screenX = roadCenterX + (obs.x) * (0.9); // small horizontal scale
-      const screenY = H * 0.45 + (1 - perspective) * H * 0.35; // closer -> lower on screen
-      const obsW = obs.w * (0.7 + perspective * 0.6);
-      const obsH = obs.h * (0.4 + perspective * 0.6);
-
-      if (rectsIntersect(carRect.x, carRect.y, carRect.w, carRect.h, screenX - obsW/2, screenY - obsH/2, obsW, obsH)) {
-        // collision!
-        obs.hit = true;
-        car.speed *= (1 - PARAM.COLLIDE_SLOW);
-        car.crashed = true;
-        playCrashVisual();
-        try { playCrash(); } catch(e){}
-        // small timeout to recover
-        setTimeout(() => { car.crashed = false; }, 450 + Math.abs(car.speed)*20);
-      }
-    }
-
-    // draw frame
-    drawFrame();
-
-    // HUD
-    if (speedEl) speedEl.innerText = `${Math.round(Math.abs(car.speed) * 6)} km/h`;
-    if (distEl) distEl.innerText = `${Math.round(distanceMeters)} m`;
-    if (timerEl) {
-      const s = Math.floor((now - startTime) / 1000);
-      const mm = String(Math.floor(s / 60)).padStart(2, '0');
-      const ss = String(s % 60).padStart(2, '0');
-      timerEl.innerText = `${mm}:${ss}`;
-    }
-
-    // engine sound update
-    if (audioCtx && engineGain) {
-      const p = Math.min(1, Math.max(0, Math.abs(car.speed) / PARAM.MAX_SPEED));
-      setEngineTone(p);
-    }
-
-    requestAnimationFrame(loop);
-  }
-
-  // crash visual (flash)
-  function playCrashVisual() {
-    // small flash overlay
-    const start = performance.now();
-    const flash = () => {
-      const now = performance.now();
-      const t = (now - start) / 300;
-      if (t > 1) return;
-      ctx.fillStyle = `rgba(255,120,120,${0.28 * (1 - t)})`;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      requestAnimationFrame(flash);
-    };
-    flash();
-  }
-
-  // drawing function: road, buildings, trees, obstacles, car
-  function drawFrame() {
-    // clear
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    const Wpx = canvas.width;
-    const Hpx = canvas.height;
-
-    // sky gradient
-    const g = ctx.createLinearGradient(0, 0, 0, Hpx);
-    g.addColorStop(0, '#6aa0ff'); g.addColorStop(1, '#12344a');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, Wpx, Hpx);
-
-    // perspective mapping helpers
-    const roadCenterX = Wpx / 2;
-    const roadHalf = world.roadW / 2;
-
-    // draw distant buildings & trees in layers based on z relative to offset
-    // We'll draw segments ahead of car
-    for (let i = 0; i < world.buildings.length; i++) {
-      const b = world.buildings[i];
-      const relZ = b.z - world.offsetZ;
-      if (relZ < -200 || relZ > 1800) continue;
-      const pct = Math.max(0.01, 1 - relZ / 1600);
-      const screenY = Hpx * 0.25 + (1 - pct) * Hpx * 0.55;
-      const scale = 0.6 + pct * 1.2;
-      const bx = roadCenterX + b.x * 1.0;
-      ctx.fillStyle = b.side < 0 ? '#6b6b7a' : '#5f6f8a';
-      const bw = b.w * scale, bh = b.h * scale;
-      ctx.fillRect(bx, screenY - bh, bw, bh);
-      // windows
-      ctx.fillStyle = 'rgba(255,255,220,0.06)';
-      for (let r = 0; r < Math.floor(bh / 20); r++) {
-        for (let c = 0; c < Math.floor(bw / 18); c++) {
-          if (Math.random() < 0.18) continue;
-          ctx.fillRect(bx + 6 + c * 18, screenY - bh + 6 + r * 18, 10, 10);
+        function addWheelToVehicle(m, isFront, x, z){
+          vehicle.addWheel({
+            wheelMesh: m,
+            isFrontWheel: isFront,
+            radius: 0.36,
+            directionLocal: new BABYLON.Vector3(0, -1, 0),
+            axleLocal: new BABYLON.Vector3(1, 0, 0),
+            suspensionRestLength: 0.5,
+            suspensionStiffness: 26,
+            dampingRelaxation: 2.5,
+            dampingCompression: 4.2,
+            frictionSlip: 6,
+            rollInfluence: 0.01,
+            chassisConnectionPointLocal: new BABYLON.Vector3(x, -0.4, z)
+          });
         }
+        addWheelToVehicle(wFL, true, -0.95, 1.8);
+        addWheelToVehicle(wFR, true, 0.95, 1.8);
+        addWheelToVehicle(wBL, false, -0.95, -1.8);
+        addWheelToVehicle(wBR, false, 0.95, -1.8);
+
+        vehicle.attachToScene();
+        physicsEnabled = true;
+        dbg('Physics: Cannon + RaycastVehicle READY');
+        modeEl.innerText = '3D Physics';
+      } else {
+        dbg('Cannon not found; skipping physics init');
       }
+    } catch(e){
+      dbg('Physics init failed:', e && e.message ? e.message : e);
+      physicsEnabled = false;
     }
 
-    // trees
-    for (let i = 0; i < world.trees.length; i++) {
-      const t = world.trees[i];
-      const relZ = t.z - world.offsetZ;
-      if (relZ < -200 || relZ > 2000) continue;
-      const pct = Math.max(0.01, 1 - relZ / 1600);
-      const sy = Hpx * 0.25 + (1 - pct) * Hpx * 0.55;
-      const sx = roadCenterX + t.x * (0.9);
-      ctx.fillStyle = '#5b8b3a';
-      ctx.beginPath();
-      ctx.ellipse(sx, sy - 10, t.size * pct, t.size * pct * 0.9, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#5b3a2a';
-      ctx.fillRect(sx - 6 * pct, sy + 2 * pct, 8 * pct, 18 * pct);
-    }
+    // Kinematic fallback variables (if physics not available)
+    const kin = {
+      velocity: new BABYLON.Vector3.Zero(),
+      speed: 0,
+      maxSpeed: 20,
+      steer: 0,
+      maxSteer: 0.55
+    };
+    if (!physicsEnabled) { modeEl.innerText = '3D (kinematic)'; dbg('Using kinematic 3D fallback'); }
 
-    // road shoulder
-    ctx.fillStyle = '#1b2b3b';
-    ctx.fillRect(0, Hpx * 0.45, (roadCenterX - world.roadW / 2) - 40, Hpx * 0.55);
-    ctx.fillRect((roadCenterX + world.roadW / 2) + 40, Hpx * 0.45, (roadCenterX - world.roadW / 2) - 40, Hpx * 0.55);
+    // camera lock target
+    camera.lockedTarget = chassis;
 
-    // road (perspective: narrow toward top)
-    // We'll draw a trapezoid representing the road
-    const topWidth = world.roadW * 0.32;
-    const bottomWidth = world.roadW;
-    const topY = Hpx * 0.12;
-    const bottomY = Hpx * 0.95;
-    ctx.fillStyle = '#2b2b2b';
-    ctx.beginPath();
-    ctx.moveTo(roadCenterX - bottomWidth / 2, bottomY);
-    ctx.lineTo(roadCenterX - topWidth / 2, topY);
-    ctx.lineTo(roadCenterX + topWidth / 2, topY);
-    ctx.lineTo(roadCenterX + bottomWidth / 2, bottomY);
-    ctx.closePath();
-    ctx.fill();
+    // control parameters
+    const MAX_ENGINE = 2400;
+    const MAX_BRAKE = 320;
+    const MAX_STEER = 0.55;
 
-    // lane center dashed
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 4;
-    ctx.setLineDash([40, 30]);
-    ctx.beginPath();
-    // center from bottom to top
-    ctx.moveTo(roadCenterX, bottomY);
-    ctx.lineTo(roadCenterX, topY);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    // HUD and timing
+    const startTime = performance.now();
 
-    // draw obstacles (boxes) with perspective scale
-    for (let i = 0; i < world.obstacles.length; i++) {
-      const o = world.obstacles[i];
-      const relZ = o.z - world.offsetZ;
-      if (relZ < -100 || relZ > 2000) continue;
-      const pct = Math.max(0.02, 1 - relZ / 1600);
-      const sx = roadCenterX + o.x * (0.9);
-      const sy = Hpx * 0.45 + (1 - pct) * Hpx * 0.5;
-      const ow = o.w * pct;
-      const oh = o.h * pct;
-      ctx.fillStyle = o.hit ? '#552' : '#6b3a3a';
-      ctx.fillRect(sx - ow / 2, sy - oh / 2, ow, oh);
-      // subtle shadow
-      ctx.fillStyle = 'rgba(0,0,0,0.18)';
-      ctx.fillRect(sx - ow / 2 + 6 * pct, sy + oh / 2, ow * 0.8, 6 * pct);
-    }
+    // main update
+    scene.onBeforeRenderObservable.add(()=> {
+      // controls -> compute steering, throttle, brake
+      let steer = 0;
+      if (input.left) steer = -MAX_STEER;
+      if (input.right) steer = MAX_STEER;
 
-    // draw skids if any (not implemented heavy) - keep it minimal
+      if (physicsEnabled && vehicle) {
+        // steering for front wheels
+        vehicle.setSteeringValue(steer, 0);
+        vehicle.setSteeringValue(steer, 1);
 
-    // draw car at lower center
-    ctx.save();
-    ctx.translate(car.px, car.py);
-    ctx.rotate(-car.angle); // negative to match steering direction
-    // shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.28)';
-    ctx.beginPath();
-    ctx.ellipse(0, car.height * 0.34, car.width * 0.58, car.height * 0.18, 0, 0, Math.PI * 2);
-    ctx.fill();
+        // engine/brake to rear wheels (2,3)
+        if (input.accel) {
+          vehicle.applyEngineForce(MAX_ENGINE, 2);
+          vehicle.applyEngineForce(MAX_ENGINE, 3);
+        } else {
+          vehicle.applyEngineForce(0,2); vehicle.applyEngineForce(0,3);
+        }
+        if (input.brake) {
+          vehicle.setBrake(MAX_BRAKE, 0); vehicle.setBrake(MAX_BRAKE,1); vehicle.setBrake(MAX_BRAKE,2); vehicle.setBrake(MAX_BRAKE,3);
+        } else {
+          vehicle.setBrake(0,0); vehicle.setBrake(0,1); vehicle.setBrake(0,2); vehicle.setBrake(0,3);
+        }
 
-    // body
-    ctx.fillStyle = '#e53935';
-    roundRect(ctx, -car.width / 2, -car.height / 2, car.width, car.height, 14);
-    ctx.fill();
+        // adjust rear friction for drift
+        try {
+          const infos = vehicle.wheelInfos || vehicle._wheelInfos || [];
+          for (let i=0;i<infos.length;i++){
+            const isRear = (i>=2);
+            infos[i].frictionSlip = isRear ? (input.drift ? 0.9 : 5.0) : 5.0;
+          }
+        } catch(e){ /* ignore */ }
 
-    // window
-    ctx.fillStyle = '#132233';
-    roundRect(ctx, -car.width / 2 + 10, -car.height / 2 + 16, car.width - 20, car.height * 0.34, 6);
-    ctx.fill();
+        // update wheel visuals are handled by Babylon if wheelMesh provided
+        // update HUD speed using chassis physics linear velocity
+        if (chassis.physicsImpostor) {
+          const lv = chassis.physicsImpostor.getLinearVelocity() || new BABYLON.Vector3(0,0,0);
+          const spd = lv.length();
+          if (speedEl) speedEl.innerText = `${Math.round(spd * 3.6)} km/h`;
+        }
+      } else {
+        // Kinematic: simple but natural-feeling model (bicycle-like)
+        // dt from engine.getDeltaTime
+        const dt = engine.getDeltaTime() / 1000;
+        // steering interpolation
+        kin.steer += (steer - kin.steer) * Math.min(1, 6 * dt);
+        // throttle/brake
+        if (input.accel) kin.speed += 16 * dt; else kin.speed -= 8 * dt;
+        if (input.brake) kin.speed -= 32 * dt;
+        kin.speed = Math.max(-6, Math.min(kin.maxSpeed, kin.speed));
+        // apply friction when no input
+        if (!input.accel && !input.brake) kin.speed *= 0.992;
 
-    // wheels (visual)
-    const whW = Math.max(12, car.width * 0.2);
-    const whH = Math.max(30, car.height * 0.28);
-    const axles = [
-      { x: -car.width * 0.38, y: car.height * 0.28 },
-      { x: car.width * 0.38, y: car.height * 0.28 },
-      { x: -car.width * 0.38, y: -car.height * 0.34 },
-      { x: car.width * 0.38, y: -car.height * 0.34 }
-    ];
-    ctx.fillStyle = '#111';
-    for (let i = 0; i < 4; i++) {
-      ctx.save();
-      ctx.translate(axles[i].x, axles[i].y);
-      if (i < 2) ctx.rotate(car.wheelAng || 0);
-      // spin animation front/back use wheelRot
-      ctx.fillRect(-whW / 2, -whH / 2, whW, whH);
-      ctx.restore();
-    }
+        // turning radius effect
+        const angular = kin.speed * kin.steer * 0.06;
+        chassis.rotation.y += angular * dt * 60;
 
-    ctx.restore();
-  }
+        // compute forward vector from chassis rotation
+        const forward = chassis.forward.normalize();
+        chassis.position.addInPlace(forward.scale(kin.speed * dt * 60));
 
-  // Rounded rect helper
-  function roundRect(ctx, x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x + r, y + h);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-    ctx.closePath();
-  }
+        // wheel visuals: spin based on kin.speed
+        const spin = kin.speed * 2.2;
+        [wFL,wFR,wBL,wBR].forEach(w => { w.rotation.x += spin * engine.getDeltaTime()/1000; });
+        // rotate front wheels by steer angle for visuals
+        wFL.rotation.y = -kin.steer; wFR.rotation.y = -kin.steer;
 
-  // start the loop
-  let started = false;
-  function start() {
-    if (started) return;
-    started = true;
-    last = performance.now();
-    requestAnimationFrame(loop);
-    dbg('Game started: use arrows/WASD or on-screen buttons. Hold DRIFT for drifts.');
-  }
+        // HUD speed
+        if (speedEl) speedEl.innerText = `${Math.round(Math.abs(kin.speed) * 12)} km/h`;
+      }
 
-  // small helper to ensure button events trigger start/resume audio
-  ['touchstart','mousedown','keydown'].forEach(ev => window.addEventListener(ev, () => {
-    if (!audioCtx) initAudio();
-    start();
-  }, { once: true, passive: true }));
+      // update timer
+      const s = Math.floor((performance.now() - startTime)/1000);
+      if (timerEl) timerEl.innerText = `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
 
-  // allow manual restart/seed when needed
-  function resetGame(){
-    world.offsetZ = 0;
-    distanceMeters = 0;
-    car.speed = 0;
-    car.angle = 0;
-    seedWorld();
-  }
+    }); // end onBeforeRender
 
-  // expose debug controls in console for you
-  window.PLAYFUL = { resetGame, dbg };
+    // Nice camera smoothing
+    camera.attachControl(canvas, true);
 
-  // initial call
-  start();
+    // fallback: if physics was requested but vehicle has problems, show debug and fallback
+    engine.runRenderLoop(()=> {
+      scene.render();
+    });
 
+    window.addEventListener('resize', ()=> engine.resize());
+
+    // final message
+    dbg('Scene ready. Physics: ' + (physicsEnabled ? 'ENABLED' : 'DISABLED (kinematic fallback)'));
+    modeEl.innerText = physicsEnabled ? '3D (Physics)' : '3D (Kinematic)';
+  } // init
 })();
