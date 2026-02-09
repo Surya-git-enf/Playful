@@ -2,21 +2,23 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Playful — Car Simulator (2D Real)</title>
+  <title>Playful — 3D Car (Physics + Fallback)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="styles.css" />
+  <!-- Babylon (global) -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <!-- Try Cannon (physics). If blocked, fallback mode will be used. -->
+  <script src="https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js"></script>
 </head>
 <body>
-  <canvas id="renderCanvas" aria-label="game-canvas"></canvas>
+  <canvas id="renderCanvas" aria-label="3D game canvas"></canvas>
 
-  <!-- HUD -->
   <div id="hud">
     <div id="speed">0 km/h</div>
-    <div id="distance">0 m</div>
+    <div id="mode">Init</div>
     <div id="timer">00:00</div>
   </div>
 
-  <!-- controls (touch + desktop) -->
   <div id="controls">
     <button id="leftBtn">◀</button>
     <button id="accBtn">▲</button>
@@ -25,11 +27,12 @@
     <button id="driftBtn">DRIFT</button>
   </div>
 
-  <div id="notes">Tip: Use Arrow keys or WASD. Hold DRIFT or Space while turning to drift.</div>
+  <div id="overlay">
+    <button id="startBtn">Start 3D Game (Fullscreen)</button>
+  </div>
 
-  <!-- debug (hidden by default) -->
-  <pre id="debug" aria-hidden="true"></pre>
+  <pre id="debug" aria-hidden="true">debug: starting...</pre>
 
-  <script src="src/main.js"></script>
+  <script src="src/main3d.js"></script>
 </body>
 </html>
