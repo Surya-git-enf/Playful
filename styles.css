@@ -1,22 +1,39 @@
-/* clean layout for 3D */
-html,body{height:100%;width:100%;margin:0;padding:0;overflow:hidden;background:#081026;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;}
-#renderCanvas{position:fixed; inset:0; width:100%; height:100%; z-index:1; display:block; background: linear-gradient(#6aa0ff 0%, #14293b 100%);}
+/* style.css - Phase 2 visual polish */
+:root{
+  --hud-bg: rgba(0,0,0,0.45);
+  --btn-bg: linear-gradient(180deg, rgba(0,0,0,0.45), rgba(0,0,0,0.18));
+}
+
+html,body{ width:100%; height:100%; margin:0; padding:0; overflow:hidden; background:#071028; font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; color:#fff; }
+
+#renderCanvas{
+  position:fixed; inset:0; width:100%; height:100%; z-index:1; display:block; background: linear-gradient(#84c0ff 0%, #0d2a42 100%);
+}
 
 /* HUD */
-#hud{position:fixed; left:12px; top:12px; z-index:40; display:flex; gap:10px; color:#fff; font-weight:700;}
-#hud>div{ background: rgba(0,0,0,0.45); padding:8px 12px; border-radius:10px; min-width:84px; text-align:center; box-shadow:0 8px 20px rgba(0,0,0,0.45); }
+#hud{ position:fixed; left:12px; top:12px; z-index:60; display:flex; gap:10px; align-items:center; }
+#hud > div { background: var(--hud-bg); padding:8px 12px; border-radius:10px; min-width:84px; text-align:center; box-shadow:0 8px 20px rgba(0,0,0,0.45); font-weight:700; }
 
-/* controls bottom */
-#controls{ position:fixed; left:50%; transform:translateX(-50%); bottom:18px; z-index:45; display:flex; gap:10px; }
-#controls button{ width:66px; height:66px; font-size:18px; border-radius:12px; border:none; color:#fff; background: linear-gradient(180deg, rgba(0,0,0,0.45), rgba(0,0,0,0.22)); box-shadow:0 8px 20px rgba(0,0,0,0.45); touch-action:none; }
-#driftBtn{ width:88px; background: linear-gradient(90deg,#ff6b6b,#ff3d3d); }
+/* Controls centered bottom */
+#controls{
+  position:fixed; left:50%; transform:translateX(-50%); bottom:18px; z-index:70;
+  display:flex; gap:10px; align-items:center;
+}
+.ctrl{
+  width:64px; height:64px; border-radius:12px; border:none; font-size:20px; color:#fff;
+  background: var(--btn-bg); box-shadow: 0 10px 26px rgba(0,0,0,0.45);
+  touch-action:none;
+}
+.ctrl:active{ transform: translateY(2px); }
+.special{ width:92px; background: linear-gradient(90deg,#ff9a6b,#ff3d3d); font-weight:800; }
 
-/* overlay start */
-#overlay{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:60; background:rgba(0,0,0,0.45); }
-#startBtn{ padding:14px 22px; font-size:18px; border-radius:12px; border:none; background: linear-gradient(90deg,#2dd4bf,#06b6d4); color:#062023; box-shadow: 0 12px 36px rgba(2,6,23,0.6); }
+/* Responsive: small screens */
+@media (max-width:480px){
+  #controls { gap:8px; }
+  .ctrl { width:54px; height:54px; font-size:18px; }
+  .special { width:78px; }
+  #hud > div { min-width:64px; padding:6px 8px; font-size:13px; }
+}
 
-/* debug (hidden usually) */
-#debug{ position:fixed; right:12px; bottom:12px; z-index:70; color:#fff; background: rgba(0,0,0,0.6); padding:10px; font-family:monospace; font-size:12px; border-radius:8px; max-height:260px; overflow:auto; display:none; }
-
-/* small screens */
-@media (max-width:480px){ #controls button{ width:54px; height:54px; font-size:16px; } #driftBtn{ width:72px; } #hud>div{ min-width:64px; padding:6px 8px; } }
+/* debug (hide by default) */
+#debug{ position:fixed; right:12px; bottom:12px; z-index:80; color:#fff; background: rgba(0,0,0,0.6); padding:10px; font-family:monospace; font-size:12px; border-radius:8px; max-height:240px; overflow:auto; display:none; }
