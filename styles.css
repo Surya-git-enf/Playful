@@ -1,43 +1,22 @@
-/* styles.css - improved visuals */
-:root{
-  --hud-bg: rgba(0,0,0,0.45);
-  --button-bg: linear-gradient(180deg, rgba(0,0,0,0.5), rgba(0,0,0,0.25));
-}
+/* clean layout for 3D */
+html,body{height:100%;width:100%;margin:0;padding:0;overflow:hidden;background:#081026;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;}
+#renderCanvas{position:fixed; inset:0; width:100%; height:100%; z-index:1; display:block; background: linear-gradient(#6aa0ff 0%, #14293b 100%);}
 
-html,body{height:100%;width:100%;margin:0;padding:0;overflow:hidden;background:#0b1220;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;}
-
-#renderCanvas{
-  position:fixed; inset:0; width:100%; height:100%; z-index:1; display:block; touch-action:none;
-  background: linear-gradient(#6aa0ff 0%, #18324a 100%);
-}
-
-/* HUD top-left */
+/* HUD */
 #hud{position:fixed; left:12px; top:12px; z-index:40; display:flex; gap:10px; color:#fff; font-weight:700;}
-#hud>div{ background: var(--hud-bg); padding:8px 12px; border-radius:10px; min-width:84px; text-align:center; box-shadow:0 8px 20px rgba(0,0,0,0.45); }
+#hud>div{ background: rgba(0,0,0,0.45); padding:8px 12px; border-radius:10px; min-width:84px; text-align:center; box-shadow:0 8px 20px rgba(0,0,0,0.45); }
 
-/* Controls bottom center */
-#controls{
-  position:fixed; left:50%; transform:translateX(-50%); bottom:18px; z-index:45; display:flex; gap:10px;
-}
-#controls button{
-  width:68px; height:68px; font-size:18px; border-radius:12px; border:none; color:#fff; background:var(--button-bg); box-shadow: 0 10px 30px rgba(0,0,0,0.45);
-  touch-action:none; user-select:none;
-}
-#controls button:active{ transform: translateY(2px) scale(0.995); }
+/* controls bottom */
+#controls{ position:fixed; left:50%; transform:translateX(-50%); bottom:18px; z-index:45; display:flex; gap:10px; }
+#controls button{ width:66px; height:66px; font-size:18px; border-radius:12px; border:none; color:#fff; background: linear-gradient(180deg, rgba(0,0,0,0.45), rgba(0,0,0,0.22)); box-shadow:0 8px 20px rgba(0,0,0,0.45); touch-action:none; }
+#driftBtn{ width:88px; background: linear-gradient(90deg,#ff6b6b,#ff3d3d); }
 
-/* drift button */
-#driftBtn{ width:90px; background: linear-gradient(90deg,#ff6b6b,#ff3d3d); }
+/* overlay start */
+#overlay{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:60; background:rgba(0,0,0,0.45); }
+#startBtn{ padding:14px 22px; font-size:18px; border-radius:12px; border:none; background: linear-gradient(90deg,#2dd4bf,#06b6d4); color:#062023; box-shadow: 0 12px 36px rgba(2,6,23,0.6); }
 
-/* notes */
-#notes { position:fixed; right:12px; top:12px; color:#fff; z-index:40; background: rgba(0,0,0,0.28); padding:8px 12px; border-radius:10px; font-size:13px; }
+/* debug (hidden usually) */
+#debug{ position:fixed; right:12px; bottom:12px; z-index:70; color:#fff; background: rgba(0,0,0,0.6); padding:10px; font-family:monospace; font-size:12px; border-radius:8px; max-height:260px; overflow:auto; display:none; }
 
-/* debug box (hidden by default) */
-#debug{ position:fixed; right:12px; bottom:12px; z-index:60; color:#0b1220; background:#fff; padding:10px; font-family:monospace; font-size:12px; border-radius:8px; max-height:220px; overflow:auto; display:none; }
-
-/* small screens adjustments */
-@media (max-width:480px){
-  #controls button{ width:56px; height:56px; font-size:16px; }
-  #driftBtn{ width:72px; }
-  #hud>div{ min-width:64px; padding:6px 8px; font-size:13px; }
-  #notes{ font-size:12px; padding:6px 8px; }
-}
+/* small screens */
+@media (max-width:480px){ #controls button{ width:54px; height:54px; font-size:16px; } #driftBtn{ width:72px; } #hud>div{ min-width:64px; padding:6px 8px; } }
