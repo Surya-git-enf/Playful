@@ -2,12 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Playful — Car Simulator (fallback safe)</title>
+  <title>Playful — Car Simulator (2D Real)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="styles.css" />
-  <!-- try Babylon + Cannon (if blocked, code falls back automatically) -->
-  <script src="https://cdn.babylonjs.com/babylon.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js"></script>
 </head>
 <body>
   <canvas id="renderCanvas" aria-label="game-canvas"></canvas>
@@ -15,21 +12,23 @@
   <!-- HUD -->
   <div id="hud">
     <div id="speed">0 km/h</div>
-    <div id="mode">Fallback</div>
+    <div id="distance">0 m</div>
     <div id="timer">00:00</div>
   </div>
 
   <!-- controls (touch + desktop) -->
   <div id="controls">
     <button id="leftBtn">◀</button>
-    <button id="rightBtn">▶</button>
     <button id="accBtn">▲</button>
+    <button id="rightBtn">▶</button>
     <button id="brakeBtn">▼</button>
     <button id="driftBtn">DRIFT</button>
   </div>
 
-  <!-- always-visible debug so we can see what happened -->
-  <pre id="debug">initialising scene...\n(If this hangs, copy the debug lines here.)</pre>
+  <div id="notes">Tip: Use Arrow keys or WASD. Hold DRIFT or Space while turning to drift.</div>
+
+  <!-- debug (hidden by default) -->
+  <pre id="debug" aria-hidden="true"></pre>
 
   <script src="src/main.js"></script>
 </body>
