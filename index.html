@@ -2,10 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Playful — 3D Car Phase 2</title>
+  <title>Playful — 3D Car (Phase 2+)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="style.css" />
-  <!-- Babylon core -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
 </head>
 <body>
@@ -18,16 +17,26 @@
     <div id="timer">00:00</div>
   </div>
 
-  <!-- Controls for mobile (and desktop clicks) -->
-  <div id="controls">
+  <!-- Fullscreen -->
+  <button id="fsBtn" title="Fullscreen">⤢</button>
+
+  <!-- Left controls (steer) -->
+  <div id="leftControls" class="controls-col">
     <button id="leftBtn" class="ctrl">◀</button>
-    <button id="accBtn"  class="ctrl">▲</button>
     <button id="rightBtn" class="ctrl">▶</button>
+  </div>
+
+  <!-- Right controls (throttle/brake) -->
+  <div id="rightControls" class="controls-col">
+    <button id="accBtn" class="ctrl">▲</button>
     <button id="brakeBtn" class="ctrl">▼</button>
+  </div>
+
+  <!-- Drift (hold) centered bottom -->
+  <div id="bottomCenter">
     <button id="driftBtn" class="ctrl special">DRIFT</button>
   </div>
 
-  <!-- small debug (hidden unless needed) -->
   <pre id="debug" aria-hidden="true"></pre>
 
   <script src="src/main.js"></script>
