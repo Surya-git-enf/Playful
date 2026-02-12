@@ -1,44 +1,96 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html>
 <head>
-  <meta charset="utf-8" />
-  <title>Playful — 3D Car (Phase 2+)</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <link rel="stylesheet" href="style.css" />
-  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <meta charset="UTF-8">
+  <title>Playful 3D Car</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: black;
+      touch-action: none;
+    }
+
+    canvas {
+      width: 100vw;
+      height: 100vh;
+      display: block;
+    }
+
+    /* UI */
+    .ui {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .leftControls, .rightControls {
+      position: absolute;
+      bottom: 40px;
+      pointer-events: auto;
+    }
+
+    .leftControls {
+      left: 20px;
+    }
+
+    .rightControls {
+      right: 20px;
+    }
+
+    button {
+      width: 70px;
+      height: 70px;
+      margin: 10px;
+      font-size: 20px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(255,255,255,0.3);
+      color: white;
+    }
+
+    .topBar {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: white;
+      font-family: monospace;
+      pointer-events: auto;
+    }
+
+  </style>
 </head>
+
 <body>
-  <canvas id="renderCanvas" touch-action="none" aria-label="3D game canvas"></canvas>
 
-  <!-- HUD -->
-  <div id="hud">
+<canvas id="renderCanvas"></canvas>
+
+<div class="ui">
+
+  <div class="topBar">
     <div id="speed">0 km/h</div>
-    <div id="mode">3D (Kinematic)</div>
-    <div id="timer">00:00</div>
+    <button onclick="switchCamera()">CAM</button>
   </div>
 
-  <!-- Fullscreen -->
-  <button id="fsBtn" title="Fullscreen">⤢</button>
-
-  <!-- Left controls (steer) -->
-  <div id="leftControls" class="controls-col">
-    <button id="leftBtn" class="ctrl">◀</button>
-    <button id="rightBtn" class="ctrl">▶</button>
+  <div class="leftControls">
+    <button id="left">◀</button>
+    <button id="right">▶</button>
   </div>
 
-  <!-- Right controls (throttle/brake) -->
-  <div id="rightControls" class="controls-col">
-    <button id="accBtn" class="ctrl">▲</button>
-    <button id="brakeBtn" class="ctrl">▼</button>
+  <div class="rightControls">
+    <button id="forward">▲</button>
+    <button id="backward">▼</button>
+    <button id="drift">DR</button>
   </div>
 
-  <!-- Drift (hold) centered bottom -->
-  <div id="bottomCenter">
-    <button id="driftBtn" class="ctrl special">DRIFT</button>
-  </div>
+</div>
 
-  <pre id="debug" aria-hidden="true"></pre>
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="main.js"></script>
 
-  <script src="src/main.js"></script>
 </body>
 </html>
