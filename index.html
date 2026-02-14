@@ -1,41 +1,19 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Playful — 3D Car (Landscape + Cameras)</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <link rel="stylesheet" href="style.css" />
-</head>
-<body>
-  <canvas id="renderCanvas" touch-action="none" aria-label="3D game canvas"></canvas>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Playful Drives — Havok + Babylon</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <canvas id="renderCanvas"></canvas>
 
-  <!-- HUD + Controls -->
-  <div id="ui">
-    <div id="topbar">
-      <div id="speed">0 km/h</div>
-      <button id="camBtn" class="ui-btn">CAM</button>
-      <button id="fsBtn" class="ui-btn">⤢</button>
+    <div id="hud">
+      <span id="speed">0 km/h</span>
+      <button id="camToggle">Toggle Camera</button>
     </div>
 
-    <div id="leftControls" class="ctrl-col">
-      <button id="leftBtn" class="ctrl">◀</button>
-      <button id="rightBtn" class="ctrl">▶</button>
-    </div>
-
-    <div id="rightControls" class="ctrl-col">
-      <button id="accBtn" class="ctrl">▲</button>
-      <button id="brakeBtn" class="ctrl">▼</button>
-    </div>
-
-    <div id="bottomCenter">
-      <button id="driftBtn" class="ctrl special">HOLD DRIFT</button>
-    </div>
-  </div>
-
-  <pre id="debug" aria-hidden="true"></pre>
-
-  <!-- Babylon must be loaded before main.js -->
-  <script src="https://cdn.babylonjs.com/babylon.js"></script>
-  <script src="src/main.js"></script>
-</body>
+    <script type="module" src="/src/main.js"></script>
+  </body>
 </html>
