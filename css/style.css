@@ -1,0 +1,18 @@
+/* style.css - mobile friendly UI */
+*{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;box-sizing:border-box}
+html,body,#renderCanvas{width:100%;height:100%;margin:0;padding:0}
+body{font-family:Arial,system-ui;overflow:hidden;background:#071028}
+#renderCanvas{position:fixed;inset:0;z-index:1;display:block;background:linear-gradient(#84c0ff,#0d2a42)}
+/* HUD */
+#hud{position:fixed;left:12px;top:12px;z-index:80;display:flex;gap:8px;align-items:center}
+#hud>#speed{background:rgba(0,0,0,0.45);padding:8px 10px;border-radius:8px;color:#fff;font-weight:700}
+.ui-btn{background:rgba(0,0,0,0.45);color:#fff;border:none;padding:8px;border-radius:8px;cursor:pointer}
+/* Controls */
+.controls-col{position:fixed;bottom:18px;display:flex;flex-direction:column;gap:10px;pointer-events:auto;z-index:90}
+#leftControls{left:14px}
+#rightControls{right:14px}
+#bottomCenter{position:fixed;left:50%;transform:translateX(-50%);bottom:20px;z-index:90}
+.ctrl{width:68px;height:68px;border-radius:12px;border:none;font-size:22px;color:#fff;background:linear-gradient(180deg, rgba(0,0,0,0.45), rgba(0,0,0,0.18));box-shadow:0 10px 26px rgba(0,0,0,0.45);cursor:pointer;touch-action:none}
+.special{width:110px;background:linear-gradient(90deg,#ff9a6b,#ff3d3d);font-weight:800}
+/* responsive */
+@media(max-width:420px){ .ctrl{width:56px;height:56px;font-size:18px} .special{width:92px} #hud>#speed{font-size:13px;padding:6px 8px} }
