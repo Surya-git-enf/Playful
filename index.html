@@ -1,60 +1,41 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>3D Car Game</title>
-
-  <!-- BABYLON CDN -->
+  <title>Playful — Babylon Car Demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <link rel="stylesheet" href="css/style.css" />
+  <!-- Babylon core -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
-
-  <style>
-    html, body {
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      overflow: hidden;
-      touch-action: none;
-      background: black;
-    }
-
-    canvas {
-      width: 100%;
-      height: 100%;
-      display: block;
-    }
-
-    /* MOBILE CONTROLS */
-    .btn {
-      position: fixed;
-      width: 80px;
-      height: 80px;
-      border-radius: 50%;
-      background: rgba(255,255,255,0.25);
-      color: white;
-      font-size: 20px;
-      border: none;
-      user-select: none;
-    }
-
-    #left { left: 20px; bottom: 120px; }
-    #right { left: 120px; bottom: 120px; }
-    #acc { right: 20px; bottom: 120px; }
-    #brake { right: 120px; bottom: 120px; }
-  </style>
 </head>
-
 <body>
-  <canvas id="game"></canvas>
+  <canvas id="renderCanvas" touch-action="none"></canvas>
 
-  <!-- CONTROLS -->
-  <button class="btn" id="left">◀</button>
-  <button class="btn" id="right">▶</button>
-  <button class="btn" id="acc">▲</button>
-  <button class="btn" id="brake">▼</button>
+  <!-- UI -->
+  <div id="hud">
+    <div id="speed">0 km/h</div>
+    <button id="camBtn" class="ui-btn">CAM</button>
+  </div>
 
-  <!-- GAME FILES -->
-  <script src="src/world.js"></script>
-  <script src="src/car.js"></script>
-  <script src="src/main.js"></script>
+  <!-- Controls -->
+  <div id="leftControls" class="controls-col">
+    <button id="leftBtn" class="ctrl">◀</button>
+    <button id="rightBtn" class="ctrl">▶</button>
+  </div>
+
+  <div id="rightControls" class="controls-col">
+    <button id="accBtn" class="ctrl">▲</button>
+    <button id="brakeBtn" class="ctrl">▼</button>
+  </div>
+
+  <div id="bottomCenter">
+    <button id="driftBtn" class="ctrl special">DRIFT</button>
+  </div>
+
+  <!-- Game scripts (order matters) -->
+  <script src="js/world.js"></script>
+  <script src="js/car.js"></script>
+  <script src="js/traffic.js"></script>
+  <script src="js/main.js"></script>
 </body>
 </html>
