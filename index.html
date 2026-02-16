@@ -1,38 +1,24 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Playful — Babylon Car Demo</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <meta charset="UTF-8" />
+  <title>Babylon Car Simulator</title>
+
+  <!-- Mobile + fullscreen -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+
+  <!-- CSS -->
   <link rel="stylesheet" href="css/style.css" />
-  <!-- Babylon core -->
+
+  <!-- Babylon.js CDN -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
 </head>
+
 <body>
-  <canvas id="renderCanvas" touch-action="none"></canvas>
+  <!-- Game Canvas -->
+  <canvas id="renderCanvas"></canvas>
 
-  <!-- UI -->
-  <div id="hud">
-    <div id="speed">0 km/h</div>
-    <button id="camBtn" class="ui-btn">CAM</button>
-  </div>
-
-  <!-- Controls -->
-  <div id="leftControls" class="controls-col">
-    <button id="leftBtn" class="ctrl">◀</button>
-    <button id="rightBtn" class="ctrl">▶</button>
-  </div>
-
-  <div id="rightControls" class="controls-col">
-    <button id="accBtn" class="ctrl">▲</button>
-    <button id="brakeBtn" class="ctrl">▼</button>
-  </div>
-
-  <div id="bottomCenter">
-    <button id="driftBtn" class="ctrl special">DRIFT</button>
-  </div>
-
-  <!-- Game scripts (order matters) -->
+  <!-- Game Scripts (ORDER MATTERS) -->
   <script src="js/world.js"></script>
   <script src="js/car.js"></script>
   <script src="js/traffic.js"></script>
