@@ -1,31 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Babylon Car Simulator</title>
-
-  <!-- Mobile + fullscreen -->
+  <meta charset="utf-8" />
+  <title>Babylon Car Simulator — Playful</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-
-  <!-- CSS -->
   <link rel="stylesheet" href="css/style.css" />
-
   <!-- Babylon.js CDN -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
 </head>
-
 <body>
-  <!-- Game Canvas -->
   <canvas id="renderCanvas"></canvas>
 
-  <!-- Game Scripts (ORDER MATTERS) -->
-  <!-- Babylon -->
-<script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <!-- HUD -->
+  <div id="hud">
+    <div class="panel" id="speed">0 km/h</div>
+    <div class="panel" id="health">❤️ 100</div>
+    <button id="camBtn" class="ui-btn">CAM</button>
+  </div>
 
-<!-- Game files (ORDER MATTERS) -->
-<script src="js/world.js"></script>
-<script src="js/car.js"></script>
-<script src="js/traffic.js"></script>
-<script src="js/main.js"></script>
+  <!-- Controls -->
+  <div id="leftControls" class="controls-col">
+    <button id="leftBtn" class="ctrl">◀</button>
+    <button id="rightBtn" class="ctrl">▶</button>
+  </div>
+
+  <div id="rightControls" class="controls-col">
+    <button id="accBtn" class="ctrl">▲</button>
+    <button id="brakeBtn" class="ctrl">▼</button>
+  </div>
+
+  <div id="bottomCenter">
+    <button id="driftBtn" class="ctrl special">DRIFT</button>
+  </div>
+
+  <!-- Game scripts (order matters) -->
+  <script src="js/world.js"></script>
+  <script src="js/car.js"></script>
+  <script src="js/traffic.js"></script>
+  <script src="js/main.js"></script>
 </body>
 </html>
