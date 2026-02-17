@@ -1,8 +1,6 @@
-/* style.css - mobile friendly game UI + canvas
-   Paste at car-game/css/style.css
-*/
+/* style.css - mobile friendly game UI + canvas */
 
-/* Prevent copy/select/long-press on mobile */
+/* Prevent selection / long-press */
 * {
   -webkit-user-select: none;
   -moz-user-select: none;
@@ -30,7 +28,7 @@ html, body {
   height: 100%;
   display: block;
   z-index: 1;
-  touch-action: none; /* prevent default gestures */
+  touch-action: none;
   background: linear-gradient(#84c0ff 0%, #0d2a42 100%);
 }
 
@@ -54,7 +52,6 @@ html, body {
   pointer-events: auto;
 }
 
-/* Fullscreen/Camera button (top-right) */
 .ui-btn {
   background: rgba(0,0,0,0.45);
   color: #fff;
@@ -75,7 +72,6 @@ html, body {
   z-index: 70;
   pointer-events: auto;
 }
-
 #leftControls { left: 14px; align-items: flex-start; }
 #rightControls { right: 14px; align-items: flex-end; }
 #bottomCenter { position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 70; pointer-events: auto; }
@@ -96,16 +92,14 @@ html, body {
   align-items: center;
   justify-content: center;
 }
-
 .ctrl:active { transform: translateY(2px); }
-
 .special {
   width: 110px;
-  background: linear-gradient(90deg, #ff9a6b, #ff3d3d);
+  background: linear-gradient(90deg,#ff9a6b,#ff3d3d);
   font-weight: 800;
 }
 
-/* Small screens */
+/* small screens */
 @media (max-width: 480px) {
   .ctrl { width: 56px; height: 56px; font-size: 18px; border-radius: 12px; }
   .special { width: 96px; }
