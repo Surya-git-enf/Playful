@@ -136,6 +136,8 @@ const createScene = () => {
     );
 
     camera.lockedTarget = car;
+    setupControls();
+enableCarMovement(scene, car, finish);
 
     // ===============================
     // UPDATE LOOP (TEMP)
