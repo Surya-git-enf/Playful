@@ -1,119 +1,172 @@
 // js/world.js
-// createWorld(scene) -> builds terrain, slope, ramps, finish, returns { roadWidth, finishMesh }
+// Procedural mountain terrain, curvy road segments, instanced trees/grass, finish trigger.
+// createWorld(scene) -> returns { roadWidth, finishTrigger }
 
 function createWorld(scene) {
-  // sky + lighting
-  const skybox = BABYLON.MeshBuilder.CreateBox("skybox", { size: 2000 }, scene);
-  const skyMat = new BABYLON.StandardMaterial("skyMat", scene);
-  skyMat.backFaceCulling = false; skyMat.disableLighting = false;
-  skyMat.diffuseColor = new BABYLON.Color3(0.53, 0.78, 0.95);
-  skybox.material = skyMat;
+  // SKY & LIGHT
+  scene.clearColor = new BABYLON.Color3(0.54, 0.78, 0.98);
 
-  const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0,1,0), scene);
-  hemi.intensity = 0.8;
-  const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.3,-1,-0.3), scene);
-  sun.position = new BABYLON.Vector3(60,120,60);
+  const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+  hemi.intensity = 0.85;
+
+  const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.4, -1, -0.35), scene);
+  sun.position = new BABYLON.Vector3(60, 140, 60);
   sun.intensity = 1.05;
 
-  // ground (big grass)
-  const ground = BABYLON.MeshBuilder.CreateGround("ground", { width: 1200, height: 2400 }, scene);
-  ground.position.y = -1;
-  const gmat = new BABYLON.StandardMaterial("gmat", scene); gmat.diffuseColor = new BABYLON.Color3(0.16,0.5,0.18);
-  ground.material = gmat;
+  // PARAMETERS
+  const terrainSizeX = 600;   // left-right world size
+  const terrainSizeZ = 2000;  // forward world size
+  const subdivisions = 120;   // ~120x120 grid (balanced mobile perf)
+  const roadWidth = 10;
+  const baseY = -6;
 
-  // road width (for reference; car can drive offroad)
-  const roadWidth = 12;
+  // CREATE BASE GROUND (grid we will deform)
+  const ground = BABYLON.MeshBuilder.CreateGround("terrain", {
+    width: terrainSizeX,
+    height: terrainSizeZ,
+    subdivisions: subdivisions
+  }, scene);
+  ground.position.y = baseY;
 
-  // create a series of sloped segments to simulate a mountain path
-  const segments = [];
-  const segmentCount = 7;
-  const baseZ = -200;
-  for (let i = 0; i < segmentCount; i++) {
-    const depth = 120;
-    const width = roadWidth;
-    const seg = BABYLON.MeshBuilder.CreateBox("seg_" + i, { width: width, height: 1, depth: depth }, scene);
-    const height = 2 + i * 2.6; // progressive height
-    seg.position = new BABYLON.Vector3(0, height, baseZ + i * (depth - 14));
-    // tilt to make climbing slope
-    seg.rotation.x = -BABYLON.Tools.ToRadians(6 + i * 2);
-    const mat = new BABYLON.StandardMaterial("segMat_" + i, scene);
-    mat.diffuseColor = new BABYLON.Color3(0.42,0.36,0.30);
-    seg.material = mat;
-    segments.push(seg);
+  // Basic colors/material for ground
+  const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+  groundMat.diffuseColor = new BABYLON.Color3(0.18, 0.48, 0.18);
+  ground.material = groundMat;
+  ground.receiveShadows = false;
+
+  // Modify vertices to create mountainous shape (fast procedural noise-like)
+  const positions = ground.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+  // positions array layout: x,y,z, x,y,z, ...
+  const vertsPerRow = subdivisions + 1;
+  for (let row = 0; row <= subdivisions; row++) {
+    for (let col = 0; col <= subdivisions; col++) {
+      const idx = 3 * (row * vertsPerRow + col);
+      const x = (col / subdivisions - 0.5) * terrainSizeX;        // -size/2 .. size/2
+      const z = (row / subdivisions - 0.0) * terrainSizeZ - (terrainSizeZ * 0.35); // start negative to place start earlier
+
+      // Procedural height (blend of sines for organic hills)
+      const h1 = Math.sin(x * 0.02) * Math.cos(z * 0.008) * 24;
+      const h2 = Math.sin(z * 0.01 + x * 0.008) * 12;
+      const ridge = Math.exp(-Math.pow((x * 0.006), 2)) * 46 * Math.cos(z * 0.004);
+      // taper uphill (makes it climb toward positive z)
+      const taper = Math.max(0, (z + terrainSizeZ * 0.25) / (terrainSizeZ * 0.8));
+      let y = (h1 * 0.5 + h2 * 0.6 + ridge * 0.7) * taper;
+      y = Math.max(y, -1.0); // base floor
+
+      positions[idx + 1] = baseY + y;
+    }
+  }
+  ground.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions);
+  ground.refreshBoundingInfo();
+
+  // Build a curvy path (centerline) along Z; we'll place road pieces along it
+  const pathPoints = [];
+  const pathSegments = 60;
+  const startZ = -terrainSizeZ * 0.35;
+  const endZ = terrainSizeZ * 0.55;
+  for (let i = 0; i <= pathSegments; i++) {
+    const t = i / pathSegments;
+    const z = startZ + t * (endZ - startZ);
+    // meandering X offset, increases variability uphill
+    const x = Math.sin(t * Math.PI * 1.6) * (6 + t * 10) + Math.cos(t * 3.2) * (2 + t * 6);
+    pathPoints.push(new BABYLON.Vector3(x, 0, z));
   }
 
-  // ramps: a few placed near the middle
-  const ramps = [];
-  for (let r = 0; r < 3; r++) {
-    const ramp = BABYLON.MeshBuilder.CreateBox("ramp_" + r, { width: 6, height: 1, depth: 12 }, scene);
-    ramp.position = new BABYLON.Vector3((Math.random()-0.5)*4, 4 + r*8, baseZ + 180 + r*200);
-    ramp.rotation.x = -0.42;
-    ramp.material = new BABYLON.StandardMaterial("rmat_" + r, scene);
-    ramp.material.diffuseColor = new BABYLON.Color3(0.55,0.38,0.27);
-    ramps.push(ramp);
+  // Helper to get terrain Y at (x,z) by sampling nearest vertex (fast but coarse)
+  function sampleTerrainY(xq, zq) {
+    // map xq,zq back to row/col indices
+    const colF = ((xq / terrainSizeX) + 0.5) * subdivisions;
+    const rowF = (( (zq + terrainSizeZ * 0.35) / terrainSizeZ )) * subdivisions;
+    const col = Math.max(0, Math.min(subdivisions, Math.round(colF)));
+    const row = Math.max(0, Math.min(subdivisions, Math.round(rowF)));
+    const id = 3 * (row * vertsPerRow + col);
+    return positions[id + 1];
   }
 
-  // finish platform at top
-  const finish = BABYLON.MeshBuilder.CreateBox("finish", { width: 22, height: 1, depth: 14 }, scene);
-  finish.position = new BABYLON.Vector3(0, 2 + segmentCount * 2.6 + 12, baseZ + segmentCount * 110);
+  // Create road: many thin boxes oriented along path segments (cheap, controllable)
+  const roadMat = new BABYLON.StandardMaterial("roadMat", scene);
+  roadMat.diffuseColor = new BABYLON.Color3(0.08, 0.08, 0.08);
+  roadMat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
+
+  const roadPieces = [];
+  const segLen = (endZ - startZ) / pathSegments;
+  for (let i = 0; i < pathPoints.length - 1; i++) {
+    const p0 = pathPoints[i];
+    const p1 = pathPoints[i + 1];
+    const mid = p0.add(p1).scale(0.5);
+
+    const dx = p1.x - p0.x;
+    const dz = p1.z - p0.z;
+    const yaw = Math.atan2(dx, dz); // rotate around Y to align piece
+
+    // sample height from terrain and flatten road slightly above terrain
+    const sampleY = sampleTerrainY(mid.x, mid.z);
+    const roadY = sampleY + 0.4; // small offset so it sits above ground
+
+    const piece = BABYLON.MeshBuilder.CreateBox("roadPiece_" + i, {
+      width: roadWidth,
+      height: 0.5,
+      depth: Math.max(8, segLen * 1.05)
+    }, scene);
+    piece.position = new BABYLON.Vector3(mid.x, roadY, mid.z);
+    piece.rotation = new BABYLON.Vector3(0, yaw, 0);
+    piece.material = roadMat;
+    piece.receiveShadows = false;
+    // mark as road for visual blending later if needed
+    roadPieces.push(piece);
+  }
+
+  // create finish platform (visual)
+  const finishPos = pathPoints[pathPoints.length - 1];
+  const finish = BABYLON.MeshBuilder.CreateBox("finishPlatform", { width: roadWidth + 8, height: 0.9, depth: 18 }, scene);
+  finish.position = new BABYLON.Vector3(finishPos.x, sampleTerrainY(finishPos.x, finishPos.z) + 1.2, finishPos.z + 6);
   finish.material = new BABYLON.StandardMaterial("finishMat", scene);
-  finish.material.diffuseColor = new BABYLON.Color3(0.16,0.56,0.72);
+  finish.material.diffuseColor = new BABYLON.Color3(0.14, 0.56, 0.72);
 
-  // small invisible finish trigger (slightly larger, used for detection)
-  const finishTrigger = BABYLON.MeshBuilder.CreateBox("finishTrigger", { width: 18, height: 6, depth: 12 }, scene);
+  const finishTrigger = BABYLON.MeshBuilder.CreateBox("finishTrigger", { width: roadWidth + 10, height: 6, depth: 22 }, scene);
   finishTrigger.position = finish.position.clone();
   finishTrigger.isVisible = false;
 
-  // environment instancing: trees + grass patches
-  const baseTrunk = BABYLON.MeshBuilder.CreateCylinder("baseTrunk", { height:2, diameterTop:0.35, diameterBottom:0.35 }, scene);
-  const baseLeaves = BABYLON.MeshBuilder.CreateSphere("baseLeaves", { diameter:2.2 }, scene);
-  const trunkMat = new BABYLON.StandardMaterial("trunkMat", scene); trunkMat.diffuseColor = new BABYLON.Color3(0.36,0.2,0.08);
-  const leafMat = new BABYLON.StandardMaterial("leafMat", scene); leafMat.diffuseColor = new BABYLON.Color3(0.06,0.45,0.12);
-  baseTrunk.material = trunkMat; baseLeaves.material = leafMat;
+  // ENVIRONMENT INSTANCING: trees, rocks, grass patches (left & right)
+  const baseTrunk = BABYLON.MeshBuilder.CreateCylinder("baseTrunk", { height: 2, diameterTop: 0.35, diameterBottom: 0.35 }, scene);
+  const baseLeaves = BABYLON.MeshBuilder.CreateSphere("baseLeaves", { diameter: 2.2 }, scene);
   baseTrunk.isPickable = baseLeaves.isPickable = false;
+  baseTrunk.material = new BABYLON.StandardMaterial("trunkMat", scene); baseTrunk.material.diffuseColor = new BABYLON.Color3(0.36, 0.2, 0.08);
+  baseLeaves.material = new BABYLON.StandardMaterial("leafMat", scene); baseLeaves.material.diffuseColor = new BABYLON.Color3(0.06, 0.45, 0.12);
 
-  const baseGrass = BABYLON.MeshBuilder.CreateGround("baseGrass", { width: 6, height: 6 }, scene);
-  const grassMat = new BABYLON.StandardMaterial("grassMat", scene); grassMat.diffuseColor = new BABYLON.Color3(0.12,0.52,0.14);
-  baseGrass.material = grassMat; baseGrass.isPickable = false;
+  const baseRock = BABYLON.MeshBuilder.CreateSphere("baseRock", { diameter: 2.2 }, scene);
+  baseRock.material = new BABYLON.StandardMaterial("rockMat", scene); baseRock.material.diffuseColor = new BABYLON.Color3(0.35,0.34,0.32);
+  baseRock.isPickable = false;
 
-  // scatter left and right sides along Z
-  for (let i = 0; i < 60; i++) {
-    const z = baseZ + i * 40 + (Math.random() * 20 - 10);
-    const side = Math.random() > 0.5 ? -1 : 1;
-    const x = side * (roadWidth/2 + 10 + Math.random()*18);
-    const t = baseTrunk.createInstance("t_trunk_" + i);
-    t.position = new BABYLON.Vector3(x, 1 + Math.random()*0.8, z + (Math.random()*12 - 6));
-    const l = baseLeaves.createInstance("t_leaf_" + i);
-    l.position = t.position.add(new BABYLON.Vector3(0,1.8 + Math.random()*0.6,0));
-    const gp = baseGrass.createInstance("g_patch_" + i);
-    gp.position = new BABYLON.Vector3(x - 6 + Math.random()*10, 0.01, z + (Math.random()*18 - 9));
-  }
-
-  // street-lamp effect (emissive bulbs with sparse lights) for style (no shadows)
-  const bulbMat = new BABYLON.StandardMaterial("bulbMat", scene); bulbMat.emissiveColor = new BABYLON.Color3(1,0.92,0.6);
-  const baseBulb = BABYLON.MeshBuilder.CreateSphere("baseBulb", { diameter:0.28 }, scene);
-  baseBulb.material = bulbMat; baseBulb.isPickable = false; baseBulb.isVisible = false;
-  // sparse small lights (every Nth)
-  const LIGHT_EVERY = 12;
-  let idx = 0;
-  for (let z = baseZ - 120; z < baseZ + segmentCount * 120 + 200; z += 80) {
-    const leftBulb = baseBulb.createInstance("bulbL_" + idx);
-    leftBulb.position = new BABYLON.Vector3(-roadWidth/2 - 6, 3.7, z);
-    const rightBulb = baseBulb.createInstance("bulbR_" + idx);
-    rightBulb.position = new BABYLON.Vector3(roadWidth/2 + 6, 3.7, z);
-    if (idx % LIGHT_EVERY === 0) {
-      const pl = new BABYLON.PointLight("pl_"+idx, leftBulb.position, scene);
-      pl.intensity = 0.6; pl.range = 6; pl.specular = new BABYLON.Color3(0.2,0.15,0.12); pl.shadowEnabled = false;
-      const pr = new BABYLON.PointLight("pr_"+idx, rightBulb.position, scene);
-      pr.intensity = 0.6; pr.range = 6; pr.shadowEnabled = false;
+  // scatter along path sides
+  for (let i = 0; i < 120; i++) {
+    const t = Math.random();
+    const z = startZ + t * (endZ - startZ) + (Math.random() * 30 - 15);
+    const side = Math.random() > 0.5 ? 1 : -1;
+    const offsetX = side * (roadWidth/2 + 8 + Math.random()*28);
+    const x = offsetX + Math.sin(z * 0.006) * 3;
+    const y = sampleTerrainY(x, z);
+    const trunk = baseTrunk.createInstance("trunk_inst_" + i);
+    trunk.position = new BABYLON.Vector3(x, y + 1.0, z);
+    const leaves = baseLeaves.createInstance("leaf_inst_" + i);
+    leaves.position = trunk.position.add(new BABYLON.Vector3(0, 1.5 + Math.random()*0.8, 0));
+    // occasional rock
+    if (Math.random() < 0.35) {
+      const r = baseRock.createInstance("rock_inst_" + i);
+      r.position = new BABYLON.Vector3(x + (Math.random()*3-1.5), y + 0.6, z + (Math.random()*6-3));
+      r.scaling = new BABYLON.Vector3(0.7 + Math.random()*1.6, 0.6 + Math.random()*1.4, 0.7 + Math.random()*1.6);
     }
-    idx++;
   }
 
-  // return references for main.js
+  // subtle ambient fog for depth
+  scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
+  scene.fogDensity = 0.0012;
+  scene.fogColor = scene.clearColor;
+
   return {
     roadWidth: roadWidth,
     finishTrigger: finishTrigger,
+    pathPoints: pathPoints,
     finishMesh: finish
   };
 }
