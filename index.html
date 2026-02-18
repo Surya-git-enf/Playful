@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <link rel="stylesheet" href="css/style.css" />
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script src="https://cdn.babylonjs.com/loaders/babylon.glTF2FileLoader.min.js"></script>
 </head>
 <body>
   <canvas id="renderCanvas" touch-action="none"></canvas>
@@ -17,20 +18,12 @@
     <button id="camBtn" class="ui-btn">CAM</button>
   </div>
 
-  <!-- On-screen controls -->
-  <div id="leftControls" class="controls-col">
-    <button id="leftBtn" class="ctrl">◀</button>
-    <button id="rightBtn" class="ctrl">▶</button>
-  </div>
-  <div id="rightControls" class="controls-col">
-    <button id="accBtn" class="ctrl">▲</button>
-    <button id="brakeBtn" class="ctrl">▼</button>
-  </div>
-  <div id="bottomCenter">
-    <button id="driftBtn" class="ctrl special">DRIFT</button>
-  </div>
+  <!-- Controls -->
+  <div id="leftControls" class="controls-col"></div>
+  <div id="rightControls" class="controls-col"></div>
+  <div id="bottomCenter"></div>
 
-  <!-- Overlays (UI shows/hides these) -->
+  <!-- Overlays -->
   <div id="overlay-retry" class="overlay hidden">
     <div class="overlay-card">
       <h2>Oh no — you fell!</h2>
@@ -51,7 +44,7 @@
     </div>
   </div>
 
-  <!-- Scripts (ORDER matters) -->
+  <!-- Scripts in correct order -->
   <script src="js/world.js"></script>
   <script src="js/car.js"></script>
   <script src="js/ui.js"></script>
