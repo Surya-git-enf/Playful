@@ -1,182 +1,223 @@
 // js/car.js
-// Loads a glTF car model (fallback to low-poly box) and provides update(dt).
-// Looks for wheel meshes by name and rotates them visually.
-// Works with window.inputState (from ui.js).
-
 function createPlayerCar(scene) {
   const root = new BABYLON.TransformNode("player_root", scene);
 
-  // fallback visuals (used only until model loaded or as final fallback)
+  // fallback visuals
   let fallbackBody = null;
-  let fallbackWheels = [];
+  const fallbackWheels = [];
 
-  // runtime model containers
+  // model containers
   let modelRoot = null;
   let modelMeshes = [];
   let wheelMeshes = [];
+  let wheelLocalOffsets = [];
 
-  // dust particle (kept from earlier)
-  const dust = new BABYLON.ParticleSystem("dust", 1500, scene);
-  dust.particleTexture = new BABYLON.Texture("https://playground.babylonjs.com/textures/flare.png", scene);
-  dust.minSize = 0.06; dust.maxSize = 0.35;
-  dust.minLifeTime = 0.35; dust.maxLifeTime = 1.0;
-  dust.minEmitPower = 0.6; dust.maxEmitPower = 1.6;
-  dust.direction1 = new BABYLON.Vector3(-1, 0.3, 0);
-  dust.direction2 = new BABYLON.Vector3(1, 0.15, 0);
-  dust.gravity = new BABYLON.Vector3(0, -1.2, 0);
-  dust.emitRate = 0;
-  dust.start();
+  // params
+  const params = {
+    maxSpeed: 32, accel: 14, brake: 26, drag: 0.986,
+    wheelRadius: 0.28, suspensionTravel: 0.35, suspensionStiffness: 12.0, suspensionDamping: 8.0
+  };
 
-  // The public api to return
+  // create fallback car
+  function createFallbackCar() {
+    fallbackBody = BABYLON.MeshBuilder.CreateBox("car_fb_body", { width: 2.2, height: 0.6, depth: 4.0 }, scene);
+    fallbackBody.parent = root; fallbackBody.position.y = 1.0;
+    const m = new BABYLON.StandardMaterial("fb_mat", scene); m.diffuseColor = new BABYLON.Color3(0.9,0.18,0.18);
+    fallbackBody.material = m;
+    function mkWheel(name,x,z) {
+      const w = BABYLON.MeshBuilder.CreateCylinder(name, { diameter: params.wheelRadius*2, height: 0.30, tessellation: 24 }, scene);
+      w.rotation.z = Math.PI/2; w.parent = root; w.position = new BABYLON.Vector3(x, 0.44, z);
+      w.material = new BABYLON.StandardMaterial(name + "_m", scene); w.material.diffuseColor = new BABYLON.Color3(0.06,0.06,0.06);
+      fallbackWheels.push(w);
+    }
+    mkWheel("wFL_fb",-0.92,1.5); mkWheel("wFR_fb",0.92,1.5);
+    mkWheel("wBL_fb",-0.92,-1.7); mkWheel("wBR_fb",0.92,-1.7);
+  }
+  createFallbackCar();
+
+  // optional audio (only loads if present)
+  let engineSound = null;
+  let skidSound = null;
+  try { engineSound = new BABYLON.Sound("engine_loop", "/assets/sounds/engine_loop.mp3", scene, null, { loop: true, volume: 0.7, autoplay:false }); } catch(e){}
+  try { skidSound = new BABYLON.Sound("skid", "/assets/sounds/skid.mp3", scene, null, { loop: false, volume: 0.75, autoplay:false }); } catch(e){}
+
+  // raycast helper
+  function raycastDownFrom(worldPos, maxDistance = 3) {
+    const dir = new BABYLON.Vector3(0, -1, 0);
+    const ray = new BABYLON.Ray(worldPos, dir, maxDistance);
+    const pick = scene.pickWithRay(ray, (mesh) => {
+      if (!mesh) return true;
+      let p = mesh;
+      while (p) { if (p === root) return false; p = p.parent; }
+      return true;
+    });
+    return pick && pick.hit ? pick : null;
+  }
+
+  // try load local car.glb first, else fallback to remote sample, else keep fallback visuals
+  (function loadCarModel() {
+    const localRoot = "/assets/car/";
+    const localFile = "car.glb";
+    const remoteRoot = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/CesiumMilkTruck/glTF/";
+    const remoteFile = "CesiumMilkTruck.gltf";
+
+    function finalizeMeshes(meshes) {
+      modelRoot = new BABYLON.TransformNode("modelRoot", scene);
+      modelMeshes = meshes;
+      meshes.forEach(m => { m.parent = modelRoot; });
+      // try detect wheels by name
+      const wheelNames = ["wheel","tyre","tire","rim"];
+      meshes.forEach(m=>{
+        const n = (m.name||"").toLowerCase();
+        if (wheelNames.some(w=>n.indexOf(w)!==-1)) wheelMeshes.push(m);
+      });
+      // second heuristic if none found
+      if (wheelMeshes.length === 0) {
+        meshes.forEach(m=>{
+          if (!m.getBoundingInfo) return;
+          const ext = m.getBoundingInfo().boundingBox.extendSize;
+          if (ext && ext.y < 0.6 && Math.abs(ext.x - ext.z) < 0.7 && ext.x < 1.2) wheelMeshes.push(m);
+        });
+      }
+      // record local offsets for wheels
+      wheelLocalOffsets = wheelMeshes.map(w=>w.position.clone());
+      // scale model to approximate car width
+      try {
+        const clones = meshes.map(m => m.clone());
+        const merged = BABYLON.Mesh.MergeMeshes(clones, true, true, undefined, false, true);
+        if (merged) {
+          const size = merged.getBoundingInfo().boundingBox.extendSize;
+          const maxDim = Math.max(size.x, size.y, size.z);
+          const target = 2.4; // approximate car width target
+          const scale = target / (maxDim || 1);
+          modelRoot.scaling = new BABYLON.Vector3(scale, scale, scale);
+          merged.dispose();
+        } else { modelRoot.scaling = new BABYLON.Vector3(0.08,0.08,0.08); }
+      } catch(e) { modelRoot.scaling = new BABYLON.Vector3(0.08,0.08,0.08); }
+      // dispose fallback visuals
+      if (fallbackBody) { fallbackBody.dispose(); fallbackBody = null; }
+      fallbackWheels.forEach(w=>w.dispose()); fallbackWheels.length = 0;
+      console.log("Car model ready. Wheels:", wheelMeshes.length);
+    }
+
+    // try local
+    BABYLON.SceneLoader.ImportMesh("", localRoot, localFile, scene, function(meshes){
+      if (meshes && meshes.length) finalizeMeshes(meshes);
+      else {
+        // try remote
+        BABYLON.SceneLoader.ImportMesh("", remoteRoot, remoteFile, scene, function(meshes2){
+          if (meshes2 && meshes2.length) finalizeMeshes(meshes2);
+        }, null, function(s,m,e){ console.warn("remote model load failed",m); });
+      }
+    }, null, function(s,m,e){
+      // local failed, attempt remote
+      BABYLON.SceneLoader.ImportMesh("", remoteRoot, remoteFile, scene, function(meshes2){
+        if (meshes2 && meshes2.length) finalizeMeshes(meshes2);
+      }, null, function(s2,m2,e2){ console.warn("both local and remote load failed",m2); });
+    });
+  })();
+
+  // dynamic wheel states for suspension
+  const wheelStates = [];
+
+  function ensureWheelStates() {
+    const count = wheelMeshes.length ? wheelMeshes.length : fallbackWheels.length;
+    while (wheelStates.length < count) wheelStates.push({ compression:0, velocity:0 });
+    if (wheelStates.length > count) wheelStates.length = count;
+  }
+
+  // API
   const api = {
     root,
     _approxSpeed: 0,
-    getHealth() { return 100; },
-    modelReady: false,
+    getHealth(){ return 100; },
+
     update(dt) {
-      const input = window.inputState || { forward: false, backward: false, steeringValue: 0 };
+      const input = window.inputState || { forward:false, backward:false, steeringValue:0, drift:false };
 
-      // physics-like kinematic movement (we keep the tuned DR-feel)
-      api._approxSpeed = api._approxSpeed || 0;
-      let velocity = api._approxSpeed;
+      // longitudinal
+      let v = api._approxSpeed || 0;
+      if (input.forward) v += params.accel * dt;
+      else if (input.backward) v -= params.brake * dt;
+      else v *= Math.pow(params.drag, dt*60);
+      v = Math.max(-12, Math.min(params.maxSpeed, v));
+      api._approxSpeed = v;
 
-      // acceleration / brake
-      const accel = 14, brake = 24, maxSpeed = 30, drag = 0.986;
-      if (input.forward) velocity += accel * dt;
-      else if (input.backward) velocity -= brake * dt;
-      else velocity *= Math.pow(drag, dt * 60);
-      velocity = Math.max(-10, Math.min(maxSpeed, velocity));
-      api._approxSpeed = velocity;
-
-      // steering: prefer continuous steeringValue
-      const steerVal = (typeof input.steeringValue === "number") ? input.steeringValue : (input.right ? 1 : (input.left ? -1 : 0));
-      const yawDelta = steerVal * 0.6 * (Math.abs(velocity) / maxSpeed) * dt * 6.0;
+      // steering
+      const steerVal = (typeof input.steeringValue === "number") ? input.steeringValue : (input.right?1:(input.left?-1:0));
+      const yawDelta = steerVal * 0.62 * (Math.abs(v) / params.maxSpeed) * dt * 6.0;
       root.rotation.y += yawDelta;
 
-      // forward movement in facing direction
+      // move
       const forward = new BABYLON.Vector3(Math.sin(root.rotation.y), 0, Math.cos(root.rotation.y));
-      const move = forward.scale(velocity * 0.12 * dt * 60);
+      const move = forward.scale(v * 0.12 * dt * 60);
       root.position.addInPlace(move);
 
-      // small lateral sway for visuals
-      const right = new BABYLON.Vector3(Math.cos(root.rotation.y), 0, -Math.sin(root.rotation.y));
-      root.position.addInPlace(right.scale(steerVal * Math.min(0.9, Math.abs(velocity) / maxSpeed) * 0.02));
-
-      // wheel visuals rotate if we have wheel meshes
-      const spin = velocity * 0.12 * dt * 60;
-      if (wheelMeshes.length) {
-        wheelMeshes.forEach(w => { w.rotation.x += spin; });
-      } else if (fallbackWheels.length) {
-        fallbackWheels.forEach(w => { w.rotation.x += spin; });
-      }
+      // wheel spin visuals
+      const spin = v * 0.12 * dt * 60;
+      if (wheelMeshes.length) wheelMeshes.forEach(w => w.rotation.x += spin);
+      else fallbackWheels.forEach(w => w.rotation.x += spin);
 
       // body roll tilt
-      const targetRoll = -steerVal * Math.min(1, Math.abs(velocity) / (maxSpeed * 0.6)) * 0.06;
+      const targetRoll = -steerVal * Math.min(1, Math.abs(v)/(params.maxSpeed*0.6)) * 0.06;
       root.rotation.z += (targetRoll - root.rotation.z) * Math.min(1, 6 * dt);
 
-      // dust emitter positioning (emitter in world space behind car)
-      const localBack = new BABYLON.Vector3(0, 0.45, -2.2);
-      const worldBack = BABYLON.Vector3.TransformCoordinates(localBack, root.getWorldMatrix());
-      dust.emitter = worldBack;
-      dust.emitRate = (input.forward && Math.abs(velocity) > 6) ? Math.min(700, 80 + Math.abs(velocity) * 20) : 0;
+      // suspension
+      ensureWheelStates();
+      const sources = wheelMeshes.length ? wheelMeshes : fallbackWheels;
+      for (let i=0;i<sources.length;i++) {
+        const wm = sources[i];
+        const worldPos = wm.getAbsolutePosition();
+        const pick = raycastDownFrom(worldPos, 3.5);
+        const st = wheelStates[i];
+        let targetCompression = 0.5;
+        if (pick && pick.pickedPoint) {
+          const groundY = pick.pickedPoint.y;
+          const desiredWheelY = groundY + params.wheelRadius;
+          const diff = Math.max(-params.suspensionTravel, Math.min(params.suspensionTravel, desiredWheelY - worldPos.y));
+          targetCompression = (diff + params.suspensionTravel) / (params.suspensionTravel*2);
+          targetCompression = Math.max(0, Math.min(1, targetCompression));
+        }
+        const k = params.suspensionStiffness, d = params.suspensionDamping;
+        const f = k * (targetCompression - st.compression);
+        st.velocity += f * dt;
+        st.velocity *= Math.exp(-d * dt);
+        st.compression += st.velocity * dt;
+        st.compression = Math.max(0, Math.min(1, st.compression));
+        const compressAmount = (st.compression - 0.5) * params.suspensionTravel * 2;
+        if (wm.parent && wm.parent === modelRoot) {
+          const idxLocal = wheelMeshes.indexOf(wm);
+          if (idxLocal >= 0 && wheelLocalOffsets[idxLocal]) wm.position.y = wheelLocalOffsets[idxLocal].y + compressAmount;
+          else wm.position.y += compressAmount * dt * 8;
+        } else {
+          wm.position.y = 0.44 + compressAmount;
+        }
+      }
+
+      // body bob
+      const avg = wheelStates.length ? (wheelStates.reduce((s,x)=>s+x.compression,0)/wheelStates.length) : 0.5;
+      const desiredBodyY = 1.0 + (0.5 - avg) * 0.12;
+      root.position.y += (desiredBodyY - root.position.y) * Math.min(1, 6 * dt);
+
+      // engine sound
+      try {
+        if (engineSound) {
+          if (Math.abs(v) > 1.8) {
+            if (!engineSound.isPlaying) engineSound.play();
+            const rate = 0.65 + (Math.abs(v) / params.maxSpeed) * 1.5;
+            engineSound.setPlaybackRate(Math.max(0.6, Math.min(2.0, rate)));
+          } else { if (engineSound.isPlaying) engineSound.pause(); }
+        }
+      } catch(e){}
+
+      // skid sound
+      try {
+        const skidTrigger = (input.drift && Math.abs(v) > 6) || (input.backward && Math.abs(v) > 8);
+        if (skidTrigger) { if (skidSound && !skidSound.isPlaying) skidSound.play(); }
+        else { if (skidSound && skidSound.isPlaying) skidSound.stop(); }
+      } catch(e){}
     }
   };
 
-  // --- fallback low-poly quick car in case glTF fails or while loading ---
-  function createFallbackCar() {
-    fallbackBody = BABYLON.MeshBuilder.CreateBox("car_fallback_body", { width: 2.2, height: 0.6, depth: 4.0 }, scene);
-    fallbackBody.parent = root; fallbackBody.position.y = 1.0;
-    fallbackBody.material = new BABYLON.StandardMaterial("car_fb_mat", scene);
-    fallbackBody.material.diffuseColor = new BABYLON.Color3(0.92, 0.14, 0.14);
-
-    function makeWheel(name, x, z) {
-      const w = BABYLON.MeshBuilder.CreateCylinder(name, { diameter: 0.56, height: 0.30, tessellation: 24 }, scene);
-      w.rotation.z = Math.PI / 2; w.parent = root; w.position = new BABYLON.Vector3(x, 0.44, z);
-      w.material = new BABYLON.StandardMaterial(name + "_m", scene); w.material.diffuseColor = new BABYLON.Color3(0.06, 0.06, 0.06);
-      fallbackWheels.push(w);
-      return w;
-    }
-    makeWheel("wFL_f", -0.92, 1.5); makeWheel("wFR_f", 0.92, 1.5);
-    makeWheel("wBL_f", -0.92, -1.7); makeWheel("wBR_f", 0.92, -1.7);
-  }
-
-  createFallbackCar();
-
-  // --- Try to load a real glTF model (public example, you can replace with your own): ---
-  // NOTE: you can instead host a nicer glTF at /assets/car/CAR.gltf and change rootUrl & fileName below.
-  (function tryLoadRemoteModel() {
-    // Public example model (truck) from Khronos glTF sample models - works for testing
-    const rootUrl = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/CesiumMilkTruck/glTF/";
-    const fileName = "CesiumMilkTruck.gltf";
-
-    BABYLON.SceneLoader.ImportMesh("", rootUrl, fileName, scene,
-      function (meshes, particleSystems, skeletons, animationGroups) {
-        if (!meshes || meshes.length === 0) {
-          console.warn("Car model loaded but no meshes found.");
-          return;
-        }
-        // unify meshes under a new parent transform (modelRoot)
-        modelRoot = new BABYLON.TransformNode("car_model_root", scene);
-        meshes.forEach(m => {
-          m.parent = modelRoot;
-          modelMeshes.push(m);
-        });
-
-        // scale & reposition model to match our prototype size
-        // tune scale by inspecting bounding box size
-        const bbox = BABYLON.Mesh.MergeMeshes(meshes.map(m=>m.clone()), false, true, undefined, false, true);
-        // We used a quick method: if large model, scale down. Use bbox size heuristics if bbox exists.
-        if (bbox) {
-          const size = bbox.getBoundingInfo().boundingBox.extendSize;
-          // rough scale target: car body ~ 2.5 width
-          const maxDim = Math.max(size.x, size.y, size.z);
-          const scale = (2.5 / (maxDim || 1.0));
-          modelRoot.scaling = new BABYLON.Vector3(scale, scale, scale);
-          bbox.dispose();
-        } else {
-          modelRoot.scaling = new BABYLON.Vector3(0.08, 0.08, 0.08);
-        }
-
-        // place model at root origin (we'll parent modelRoot to our root)
-        modelRoot.position = BABYLON.Vector3.Zero();
-        modelRoot.parent = root;
-        // try to find wheel submeshes by name (common naming patterns)
-        const wheelNames = ["wheel", "tyre", "tire", "wheel_front", "wheel_back"];
-        meshes.forEach(m => {
-          const n = (m.name || "").toLowerCase();
-          if (!n) return;
-          if (wheelNames.some(w => n.indexOf(w) !== -1)) {
-            wheelMeshes.push(m);
-          }
-        });
-
-        // If wheelMeshes empty, try a second pass: any mesh with roughly circular bounding in XZ (heuristic)
-        if (wheelMeshes.length === 0) {
-          meshes.forEach(m => {
-            if (!m || !m.getBoundingInfo) return;
-            const ext = m.getBoundingInfo().boundingBox.extendSize;
-            // small and roughly rotated cylinder-like on Y axis often wheel => ext.y < ext.x ~ ext.z small height
-            if (ext && ext.y < 0.6 && (Math.abs(ext.x - ext.z) < 0.6) && (ext.x < 1.3)) {
-              wheelMeshes.push(m);
-            }
-          });
-        }
-
-        // hide fallback visuals
-        if (fallbackBody) { fallbackBody.dispose(); fallbackBody = null; }
-        fallbackWheels.forEach(w => w.dispose());
-        fallbackWheels = [];
-
-        api.modelReady = true;
-        console.log("Car glTF loaded. Wheels found:", wheelMeshes.length);
-      },
-      null,
-      function (scene, message, exception) {
-        console.warn("Car model failed to load:", message, exception);
-        // keep fallback car — nothing else to do
-      }
-    );
-  })();
-
   return api;
-}
+                                                                                 }
