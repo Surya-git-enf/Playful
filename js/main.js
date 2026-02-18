@@ -1,93 +1,88 @@
 // js/main.js
-// Orchestrator: boot, create scene, world, car, camera, HUD, overlays, input integration.
-
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', ()=> {
   const canvas = document.getElementById('renderCanvas');
   const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer:true, stencil:true });
 
-  // create scene
   const scene = new BABYLON.Scene(engine);
-  scene.clearColor = new BABYLON.Color3(0.56, 0.78, 0.98);
+  scene.clearColor = new BABYLON.Color3(0.56,0.78,0.98);
 
-  // world
   const worldInfo = createWorld(scene);
   const finishTrigger = worldInfo.finishTrigger;
   window.currentLevel = window.currentLevel || 1;
 
-  // create player car
   const player = createPlayerCar(scene);
-  // initial spawn: near start of path (approx)
   player.root.position = new BABYLON.Vector3(0, 1.8, -720);
 
-  // camera: follow camera with smoothing
-  const cam = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(0, 6, -12), scene);
-  cam.setTarget(player.root.position);
-  scene.activeCamera = cam;
-  cam.attachControl(canvas, true);
+  // cinematic camera presets & toggle
+  const cam = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(0,6,-18), scene);
+  cam.fov = 0.92; cam.minZ = 0.1; scene.activeCamera = cam; cam.attachControl(canvas, true);
+  const camPresets = [
+    { offset: new BABYLON.Vector3(0,6.0,-18.0), lookAt: new BABYLON.Vector3(0,1.6,2) },
+    { offset: new BABYLON.Vector3(0,4.0,-9.0), lookAt: new BABYLON.Vector3(0,1.2,1.6) },
+    { offset: new BABYLON.Vector3(0,1.8,0.9), lookAt: new BABYLON.Vector3(0,1.2,3.6) }
+  ];
+  let currentCamIndex = 0;
+  window.addEventListener('game:togglecam', ()=> { currentCamIndex = (currentCamIndex + 1) % camPresets.length; });
 
-  // smoothing follow in render loop
-  const camOffset = new BABYLON.Vector3(0, 6, -12);
-
-  // events for overlays
-  window.addEventListener('game:retry', () => {
+  // event handlers
+  window.addEventListener('game:retry', ()=> {
     UI.hideRetry(); UI.hideSuccess();
-    player.root.position = new BABYLON.Vector3(0, 1.8, -720 - (window.currentLevel - 1) * 20);
-    player.root.rotation = new BABYLON.Vector3(0, 0, 0);
+    player.root.position = new BABYLON.Vector3(0,1.8,-720 - (window.currentLevel - 1) * 20);
+    player.root.rotation = new BABYLON.Vector3(0,0,0);
+  });
+  window.addEventListener('game:nextlevel', ()=> {
+    UI.hideSuccess(); window.currentLevel = (window.currentLevel || 1) + 1;
+    player.root.position = new BABYLON.Vector3(0,1.8,-740 - (window.currentLevel - 1) * 40);
   });
 
-  window.addEventListener('game:nextlevel', () => {
-    UI.hideSuccess();
-    window.currentLevel = (window.currentLevel || 1) + 1;
-    // jump start position a little deeper so next is different
-    player.root.position = new BABYLON.Vector3(0, 1.8, -740 - (window.currentLevel - 1) * 40);
-  });
-
-  window.addEventListener('game:togglecam', () => {
-    // quick toggle between close third-person and farther third-person
-    if (cam.radius === undefined) {
-      // we are using UniversalCamera — do a param toggle using a stored state
-      cam.position = cam.position.add(new BABYLON.Vector3(0, 0, 0)); // no-op, toggle handled in loop
-      cam._mountFar = !cam._mountFar;
-    } else {
-      cam._mountFar = !cam._mountFar;
-    }
-  });
+  // helper to update camera each frame
+  function updateCameraSmooth() {
+    const preset = camPresets[currentCamIndex];
+    const ang = player.root.rotation.y;
+    const cosA = Math.cos(ang), sinA = Math.sin(ang);
+    const off = preset.offset;
+    const transformed = new BABYLON.Vector3(
+      off.x * cosA - off.z * sinA,
+      off.y,
+      off.x * sinA + off.z * cosA
+    );
+    const desiredPos = player.root.position.add(transformed);
+    cam.position = BABYLON.Vector3.Lerp(cam.position, desiredPos, 0.12);
+    const look = preset.lookAt;
+    const lookWorld = new BABYLON.Vector3(
+      look.x * cosA - look.z * sinA,
+      look.y,
+      look.x * sinA + look.z * cosA
+    );
+    const desiredTarget = player.root.position.add(lookWorld);
+    const currentTarget = cam.getTarget ? cam.getTarget() : player.root.position;
+    const newTarget = BABYLON.Vector3.Lerp(currentTarget, desiredTarget, 0.18);
+    cam.setTarget(newTarget);
+  }
 
   // main loop
   let last = performance.now();
-  engine.runRenderLoop(() => {
+  engine.runRenderLoop(()=> {
     const now = performance.now();
     const dt = Math.min(0.045, (now - last) / 1000);
     last = now;
 
-    // update player
     if (player && player.update) player.update(dt);
 
-    // camera smoothing: target position behind the car
-    const wanted = player.root.position.add(BABYLON.Vector3.TransformCoordinates(new BABYLON.Vector3(0, 6, -14), player.root.getWorldMatrix().getRotationMatrix()));
-    // Lerp current cam position toward wanted
-    cam.position = BABYLON.Vector3.Lerp(cam.position, wanted, 0.12);
-    cam.setTarget(BABYLON.Vector3.Lerp(cam.getTarget ? cam.getTarget() : player.root.position, player.root.position, 0.22));
+    updateCameraSmooth();
 
-    // HUD
     const kmh = Math.round(Math.abs(player._approxSpeed || 0) * 3.6);
     UI.updateHUD(kmh, window.currentLevel, player.getHealth && player.getHealth());
 
-    // finish detection roughly by distance
     if (finishTrigger) {
       const d = BABYLON.Vector3.Distance(player.root.position, finishTrigger.position);
-      if (d < 8) {
-        UI.showSuccess();
-      }
+      if (d < 8) UI.showSuccess();
     }
 
-    // fall detection (off map)
-    if (player.root.position.y < -25 || Math.abs(player.root.position.x) > 1200) {
-      UI.showRetry();
-    }
+    if (player.root.position.y < -25 || Math.abs(player.root.position.x) > 1200) UI.showRetry();
 
     scene.render();
   });
 
-  window.addEventListener('resize', () => engine.resize());
+  window.addEventListener('resize', ()=> engine.resize());
 });
