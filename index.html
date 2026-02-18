@@ -4,15 +4,10 @@
   <meta charset="utf-8" />
   <title>Mount Climb — Offroad</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-
-  <!-- Styles -->
   <link rel="stylesheet" href="css/style.css" />
-
-  <!-- Babylon.js -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
 </head>
 <body>
-  <!-- Game canvas -->
   <canvas id="renderCanvas" touch-action="none"></canvas>
 
   <!-- HUD -->
@@ -22,7 +17,7 @@
     <button id="camBtn" class="ui-btn">CAM</button>
   </div>
 
-  <!-- On-screen controls (mobile) -->
+  <!-- On-screen controls -->
   <div id="leftControls" class="controls-col">
     <button id="leftBtn" class="ctrl">◀</button>
     <button id="rightBtn" class="ctrl">▶</button>
@@ -35,7 +30,7 @@
     <button id="driftBtn" class="ctrl special">DRIFT</button>
   </div>
 
-  <!-- Overlays -->
+  <!-- Overlays (UI shows/hides these) -->
   <div id="overlay-retry" class="overlay hidden">
     <div class="overlay-card">
       <h2>Oh no — you fell!</h2>
@@ -56,7 +51,7 @@
     </div>
   </div>
 
-  <!-- Game scripts (order matters) -->
+  <!-- Scripts (ORDER matters) -->
   <script src="js/world.js"></script>
   <script src="js/car.js"></script>
   <script src="js/ui.js"></script>
