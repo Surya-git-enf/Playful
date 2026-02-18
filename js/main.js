@@ -1,115 +1,76 @@
-// js/main.js (improved main loop, binds UI + cameras + safe input)
+// js/main.js
+window.addEventListener('DOMContentLoaded', ()=> {
+  const canvas = document.getElementById('renderCanvas');
+  const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer:true, stencil:true });
 
-window.addEventListener("DOMContentLoaded", () => {
-  const canvas = document.getElementById("renderCanvas");
-  canvas.style.touchAction = "none";
+  // create scene
+  const scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color3(0.6,0.8,1);
 
-  // disable arrow default behavior
-  window.addEventListener("keydown", e => {
-    if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key)) e.preventDefault();
+  // world - builds mountain & environment
+  const worldInfo = createWorld(scene);
+  const finishTrigger = worldInfo.finishTrigger;
+  const finishMesh = worldInfo.finishMesh;
+  window.currentLevel = 1;
+
+  // player car
+  const player = createPlayerCar(scene);
+  player.root.position = new BABYLON.Vector3(0, 2, -260);
+  // camera: follow + toggle to first-person
+  const followCam = new BABYLON.FollowCamera('followCam', player.root.position.add(new BABYLON.Vector3(0,6,-12)), scene);
+  followCam.lockedTarget = player.root; followCam.radius = 14; followCam.heightOffset = 5; followCam.rotationOffset = 180; followCam.cameraAcceleration = 0.05;
+  const firstCam = new BABYLON.UniversalCamera('firstCam', new BABYLON.Vector3(0,1.6,0), scene);
+  firstCam.parent = player.root; firstCam.position = new BABYLON.Vector3(0,1.6,0.8); firstCam.rotation = new BABYLON.Vector3(0,Math.PI,0);
+  scene.activeCamera = followCam;
+  scene.activeCamera.attachControl(canvas, true);
+
+  // events: retry / next level / toggle cam
+  window.addEventListener('game:retry', ()=> {
+    // reset car position & hide overlays
+    UI.hideRetry(); UI.hideSuccess();
+    player.root.position = new BABYLON.Vector3(0,2,-260);
+    player.root.rotation = BABYLON.Vector3.Zero();
+  });
+  window.addEventListener('game:nextlevel', ()=> {
+    UI.hideSuccess();
+    // simple increase: teleport to a steeper starting Z (for quick demo)
+    window.currentLevel = (window.currentLevel || 1) + 1;
+    player.root.position = new BABYLON.Vector3(0,2,-260 - (window.currentLevel-1)*40);
+  });
+  window.addEventListener('game:togglecam', ()=> {
+    scene.activeCamera = scene.activeCamera === followCam ? firstCam : followCam;
+    try { scene.activeCamera.attachControl(canvas, true); } catch (e) {}
   });
 
-  const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer:true, stencil:true });
-  const createScene = () => {
-    const scene = new BABYLON.Scene(engine);
-    scene.clearColor = new BABYLON.Color3(0.6, 0.78, 0.95);
+  // main loop
+  let last = performance.now();
+  engine.runRenderLoop(()=> {
+    const now = performance.now(); const dt = Math.min(0.04,(now - last)/1000); last = now;
+    // update car with dt (ui.js sets window.inputState)
+    if (player && player.update) player.update(dt);
+    // hud update
+    const kmh = Math.round(Math.abs(player._approxSpeed || 0) * 3.6);
+    UI.updateHUD(kmh, window.currentLevel, player.getHealth && player.getHealth());
 
-    // world, return road sizes
-    const winfo = createWorld(scene);
-    const roadWidth = winfo.roadWidth || 12;
-
-    // create player
-    const player = createPlayerCar(scene);
-    player.root.position = new BABYLON.Vector3(0, 0, 6);
-
-    // set collider reference for traffic collision checks
-    player.collider = player.collider || player.root.getChildren().find(c=>c.name.includes("playerCollider")) || null;
-
-    // traffic system
-    const traffic = createTrafficSystem(scene, player);
-
-    // camera: follow + first person toggle
-    const followCam = new BABYLON.FollowCamera("follow", new BABYLON.Vector3(0,6,-15), scene);
-    followCam.radius = 18; followCam.heightOffset = 6; followCam.rotationOffset = 180;
-    followCam.lockedTarget = player.root;
-    followCam.attachControl(canvas, true);
-
-    const firstCam = new BABYLON.UniversalCamera("first", new BABYLON.Vector3(0,1.6,0), scene);
-    firstCam.parent = player.root; firstCam.position = new BABYLON.Vector3(0,1.6,0.6); firstCam.rotation = new BABYLON.Vector3(0,Math.PI,0);
-
-    scene.activeCamera = followCam;
-
-    // on-screen & keyboard input
-    const input = { left:false, right:false, accel:false, brake:false, drift:false };
-
-    function bindHold(id, prop) {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.addEventListener("pointerdown", e=>{ input[prop] = true; e.preventDefault(); }, { passive:false });
-      el.addEventListener("pointerup",   e=>{ input[prop] = false; e.preventDefault(); }, { passive:false });
-      el.addEventListener("pointerout",  e=>{ input[prop] = false; e.preventDefault(); }, { passive:false });
-      el.addEventListener("pointercancel", e=>{ input[prop] = false; e.preventDefault(); }, { passive:false });
-    }
-    bindHold("leftBtn","left"); bindHold("rightBtn","right"); bindHold("accBtn","accel"); bindHold("brakeBtn","brake"); bindHold("driftBtn","drift");
-
-    window.addEventListener("keydown",(e)=>{
-      if (e.key === "ArrowLeft" || e.key === "a") input.left = true;
-      if (e.key === "ArrowRight" || e.key === "d") input.right = true;
-      if (e.key === "ArrowUp" || e.key === "w") input.accel = true;
-      if (e.key === "ArrowDown" || e.key === "s") input.brake = true;
-      if (e.key === " ") input.drift = true;
-      if (e.key.toLowerCase() === "c") {
-        scene.activeCamera = scene.activeCamera === followCam ? firstCam : followCam;
-        try { scene.activeCamera.attachControl(canvas, true); } catch(e){}
+    // finish detection: simple intersection test (distance)
+    if (finishTrigger) {
+      const dist = BABYLON.Vector3.Distance(player.root.position, finishTrigger.position);
+      if (dist < 6) {
+        // show success overlay
+        UI.showSuccess();
+        // pause movement by relocating player slightly away so not retrigger
+        player.root.position.z += 8;
       }
-    });
-    window.addEventListener("keyup",(e)=>{
-      if (e.key === "ArrowLeft" || e.key === "a") input.left = false;
-      if (e.key === "ArrowRight" || e.key === "d") input.right = false;
-      if (e.key === "ArrowUp" || e.key === "w") input.accel = false;
-      if (e.key === "ArrowDown" || e.key === "s") input.brake = false;
-      if (e.key === " ") input.drift = false;
-    });
+    }
 
-    // camera UI button
-    const camBtn = document.getElementById("camBtn");
-    if (camBtn) camBtn.addEventListener("click", ()=>{
-      scene.activeCamera = scene.activeCamera === followCam ? firstCam : followCam;
-      try { scene.activeCamera.attachControl(canvas, true); } catch(e){}
-    });
+    // fall detection
+    if (player.root.position.y < -10) {
+      UI.showRetry();
+    }
 
-    // HUD elements
-    const speedEl = document.getElementById("speed");
-    const healthEl = document.getElementById("health");
+    scene.render();
+    last = now;
+  });
 
-    // main loop
-    let last = performance.now();
-    scene.onBeforeRenderObservable.add(()=>{
-      const now = performance.now();
-      const dt = Math.min(0.04, (now - last)/1000);
-      last = now;
-
-      // call player update with dt and input
-      player.update(dt, input);
-
-      // clamp X to road bounds but allow limited offroad
-      const maxX = (roadWidth / 2) - 0.9;
-      if (player.root.position.x > maxX) player.root.position.x = maxX;
-      if (player.root.position.x < -maxX) player.root.position.x = -maxX;
-
-      // update traffic with dt
-      traffic.update(dt);
-
-      // HUD refresh
-      const kmh = Math.round(Math.abs(player._approxSpeed || 0) * 3.6);
-      speedEl.innerText = kmh + " km/h";
-      healthEl.innerText = "❤️ " + player.getHealth();
-    });
-
-    return scene;
-  };
-
-  const scene = createScene();
-  engine.runRenderLoop(()=> scene.render());
-  window.addEventListener("resize", ()=> engine.resize());
+  window.addEventListener('resize', ()=> engine.resize());
 });
