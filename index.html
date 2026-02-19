@@ -5,8 +5,10 @@
   <title>Mount Climb — Offroad</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <link rel="stylesheet" href="css/style.css" />
+  <!-- Babylon.js CDN -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
-  <script src="https://cdn.babylonjs.com/loaders/babylon.glTF2FileLoader.min.js"></script>
+  <!-- glTF loader (Babylon includes loader in CDN; explicit loader not required but safe) -->
+  <script src="https://preview.babylonjs.com/loaders/babylon.glTF2FileLoader.min.js"></script>
 </head>
 <body>
   <canvas id="renderCanvas" touch-action="none"></canvas>
@@ -18,7 +20,7 @@
     <button id="camBtn" class="ui-btn">CAM</button>
   </div>
 
-  <!-- Controls -->
+  <!-- Controls: these containers will be populated / used by ui.js -->
   <div id="leftControls" class="controls-col"></div>
   <div id="rightControls" class="controls-col"></div>
   <div id="bottomCenter"></div>
@@ -44,7 +46,7 @@
     </div>
   </div>
 
-  <!-- Scripts in correct order -->
+  <!-- Script order matters: world -> car -> ui -> main -->
   <script src="js/world.js"></script>
   <script src="js/car.js"></script>
   <script src="js/ui.js"></script>
