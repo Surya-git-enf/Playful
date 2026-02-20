@@ -1,171 +1,139 @@
 // js/car.js
-// Exports createPlayerCar(scene, useGLB) -> returns a car root with update(dt) and _approxSpeed
+// Real car controller for Babylon.js (GitHub Pages safe)
 
-export async function createPlayerCar(scene, useGLB = true) {
-  // Helper: sample ground Y (raycast)
-  function sampleGroundY(worldPos) {
-    const r = new BABYLON.Ray(worldPos.add(new BABYLON.Vector3(0, 6, 0)), new BABYLON.Vector3(0, -1, 0), 30);
-    const pick = scene.pickWithRay(r, (m) => true);
-    if (pick && pick.hit) return pick.pickedPoint.y;
-    return null;
+export class CarController {
+  constructor(scene, camera, ui) {
+    this.scene = scene;
+    this.camera = camera;
+    this.ui = ui;
+
+    // car state
+    this.carRoot = null;
+    this.wheels = [];
+    this.speed = 0;
+    this.maxSpeed = 1.2;
+    this.acceleration = 0.02;
+    this.brakePower = 0.04;
+    this.turnSpeed = 0.03;
+    this.gravity = -0.05;
+    this.verticalVelocity = 0;
+
+    this.isLoaded = false;
+    this.isFinished = false;
+
+    this.loadCar();
   }
 
-  // Attempt to load GLB if requested
-  if (useGLB) {
-    try {
-      // Import all meshes from assets/car/car.glb
-      const rootUrl = "assets/car/";
-      const filename = "car.glb";
-      const result = await new Promise((resolve, reject) => {
-        BABYLON.SceneLoader.ImportMesh("", rootUrl, filename, scene, (meshes, particleSystems, skeletons, animationGroups) => {
-          resolve({ meshes, skeletons, animationGroups });
-        }, null, (scene, message) => {
-          reject(new Error("Failed to load GLB: " + message));
-        });
-      });
+  loadCar() {
+    BABYLON.SceneLoader.ImportMesh(
+      "",
+      "assets/car/",
+      "car.glb",
+      this.scene,
+      (meshes) => {
+        // root
+        this.carRoot = new BABYLON.TransformNode("carRoot", this.scene);
 
-      // Find the main car root: prefer a node named 'car' or use a new container
-      let carRoot = new BABYLON.TransformNode("carRoot", scene);
-      // Parent all imported meshes under carRoot (but avoid re-parenting lights/camera)
-      result.meshes.forEach(m => {
-        if (m && m.parent === null && (m instanceof BABYLON.Mesh)) {
-          // If mesh name is something like '__root__' or 'Car', prefer that as root
-        }
-        // Attach mesh to carRoot
-        try { m.setParent(carRoot); } catch (e) {}
-      });
+        meshes.forEach((m) => {
+          m.parent = this.carRoot;
 
-      // Optional: try to find wheel meshes by common names
-      const wheelNames = ["wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr", "wheel_FL", "wheel_FR", "wheel_RL", "wheel_RR", "wheelFL", "wheelFR", "wheelRL", "wheelRR"];
-      const wheels = [];
-      result.meshes.forEach(m => {
-        const lname = (m.name || "").toLowerCase();
-        for (const wn of wheelNames) {
-          if (lname.indexOf(wn.toLowerCase()) !== -1 || lname.indexOf("wheel") !== -1) {
-            wheels.push(m);
-            break;
+          // detect wheels by name
+          if (m.name.toLowerCase().includes("wheel")) {
+            this.wheels.push(m);
           }
-        }
-      });
-
-      // Fallback: if no wheel meshes found, pick meshes with 'wheel' substring
-      if (wheels.length === 0) {
-        result.meshes.forEach(m => {
-          if ((m.name || "").toLowerCase().includes("wheel")) wheels.push(m);
         });
+
+        // scale & orientation (IMPORTANT)
+        this.carRoot.scaling = new BABYLON.Vector3(0.6, 0.6, 0.6);
+        this.carRoot.rotation = new BABYLON.Vector3(0, Math.PI, 0);
+        this.carRoot.position = new BABYLON.Vector3(0, 3, 8);
+
+        // camera follow
+        this.camera.lockedTarget = this.carRoot;
+        this.camera.radius = 10;
+        this.camera.heightOffset = 3;
+        this.camera.rotationOffset = 180;
+
+        this.isLoaded = true;
+        console.log("🚗 Car loaded successfully");
       }
+    );
+  }
 
-      // Position & scale fix (if model is too big/small). Adjust as needed.
-      carRoot.scaling = new BABYLON.Vector3(1, 1, 1);
-      carRoot.position = new BABYLON.Vector3(0, 2.6, 6); // start location (overrides as needed)
+  update() {
+    if (!this.isLoaded || this.isFinished) return;
 
-      // Add necessary runtime fields & update()
-      carRoot._approxSpeed = 0;
-      let velocity = 0;
-      let steer = 0;
-      const params = { maxSpeed: 26, reverseMax: -8, accel: 16, brake: 36, drag: 0.986, maxSteer: 0.82, steerResponse: 7.5 };
+    // ----- INPUT -----
+    const gas = this.ui.gas;
+    const brake = this.ui.brake;
+    const steer = this.ui.steer; // -1 left, +1 right
 
-      carRoot.update = function (dt, world) {
-        const input = window.inputState || {};
-        const forward = !!input.accelerate;
-        const backward = !!input.brake;
-        const steerVal = (typeof input.steeringValue === "number") ? input.steeringValue : (input.steer || 0);
+    // ----- SPEED -----
+    if (gas) {
+      this.speed += this.acceleration;
+    } else if (brake) {
+      this.speed -= this.brakePower;
+    } else {
+      this.speed *= 0.98; // friction
+    }
 
-        if (forward) velocity += params.accel * dt;
-        else if (backward) velocity -= params.brake * dt;
-        else velocity *= Math.pow(params.drag, dt * 60);
+    this.speed = BABYLON.Scalar.Clamp(
+      this.speed,
+      -this.maxSpeed * 0.4,
+      this.maxSpeed
+    );
 
-        velocity = Math.max(params.reverseMax, Math.min(params.maxSpeed, velocity));
-        carRoot._approxSpeed = velocity;
+    // ----- STEERING -----
+    if (Math.abs(this.speed) > 0.01) {
+      this.carRoot.rotation.y += steer * this.turnSpeed * (this.speed / this.maxSpeed);
+    }
 
-        steer += (steerVal - steer) * Math.min(1, params.steerResponse * dt);
-        const yawDelta = steer * params.maxSteer * (Math.abs(velocity) / params.maxSpeed);
-        carRoot.rotation.y += yawDelta * dt * 4.5;
+    // ----- MOVE FORWARD -----
+    const forward = new BABYLON.Vector3(
+      Math.sin(this.carRoot.rotation.y),
+      0,
+      Math.cos(this.carRoot.rotation.y)
+    );
 
-        // move forward in world space based on rotation
-        const fwd = new BABYLON.Vector3(Math.sin(carRoot.rotation.y), 0, Math.cos(carRoot.rotation.y));
-        carRoot.position.addInPlace(fwd.scale(velocity * dt * 0.12 * 60));
+    this.carRoot.position.addInPlace(forward.scale(this.speed));
 
-        // sample ground and adjust height/pitch
-        const centerY = sampleGroundY(carRoot.position);
-        const ahead = carRoot.position.add(fwd.scale(1.8));
-        const aheadY = sampleGroundY(ahead);
-        if (centerY !== null && aheadY !== null) {
-          const rideHeight = 0.95;
-          const desiredY = centerY + rideHeight;
-          carRoot.position.y += (desiredY - carRoot.position.y) * Math.min(1, 8 * dt);
-          const dz = aheadY - centerY;
-          const pitch = Math.atan2(dz, 1.8);
-          carRoot.rotation.x += (pitch - carRoot.rotation.x) * Math.min(1, 6 * dt);
-        } else {
-          carRoot.position.y -= 9.8 * dt * 0.04;
-        }
+    // ----- GRAVITY -----
+    this.verticalVelocity += this.gravity;
+    this.carRoot.position.y += this.verticalVelocity;
 
-        // rotate wheels visually if present
-        wheels.forEach((w) => {
-          w.rotation.x += velocity * dt * 2.6;
-          // optionally adjust front wheel yaw (if you know that w is front wheel)
-        });
+    // ground clamp (road / mountain)
+    if (this.carRoot.position.y < 1.5) {
+      this.carRoot.position.y = 1.5;
+      this.verticalVelocity = 0;
+    }
 
-        // simple fall detection
-        if (carRoot.position.y < -20) { if (window.UI && window.UI.showRetry) window.UI.showRetry(); }
-      };
+    // ----- WHEEL ROTATION -----
+    this.wheels.forEach((w) => {
+      w.rotation.x += this.speed * 2;
+    });
 
-      return carRoot;
-    } catch (err) {
-      console.warn("GLB load failed, falling back to procedural car:", err);
-      // fallthrough to procedural
+    // ----- FALL DETECTION -----
+    if (this.carRoot.position.y < -10) {
+      this.fail();
+    }
+
+    // ----- FINISH CHECK (top of mountain) -----
+    if (this.carRoot.position.z < -120) {
+      this.success();
     }
   }
 
-  // Procedural fallback car (jeep-like)
-  const root = new BABYLON.TransformNode("fallbackCar", scene);
-  const body = BABYLON.MeshBuilder.CreateBox("fbBody", { width: 2, height: 0.6, depth: 3 }, scene);
-  body.parent = root; body.position.y = 0.9;
-  const mat = new BABYLON.StandardMaterial("fbMat", scene); mat.diffuseColor = new BABYLON.Color3(0.8, 0.1, 0.1);
-  body.material = mat;
+  fail() {
+    this.isFinished = true;
+    this.speed = 0;
+    if (this.ui.onFail) this.ui.onFail();
+    console.log("❌ Car failed (fell down)");
+  }
 
-  const wheels = [];
-  [[-0.9, 1.2], [0.9, 1.2], [-0.9, -1.2], [0.9, -1.2]].forEach((p, i) => {
-    const w = BABYLON.MeshBuilder.CreateCylinder("wfb" + i, { diameter: 0.6, height: 0.28 }, scene);
-    w.rotation.z = Math.PI / 2; w.parent = root; w.position = new BABYLON.Vector3(p[0], 0.45, p[1]);
-    wheels.push(w);
-  });
-
-  root.position.set(0, 2.6, 6);
-  root._approxSpeed = 0;
-  let velocity = 0;
-  let steer = 0;
-
-  root.update = function (dt) {
-    const input = window.inputState || {};
-    const forward = !!input.accelerate;
-    const backward = !!input.brake;
-    const steerVal = (typeof input.steeringValue === "number") ? input.steeringValue : (input.steer || 0);
-
-    if (forward) velocity += 14 * dt;
-    else if (backward) velocity -= 36 * dt;
-    else velocity *= Math.pow(0.985, dt * 60);
-    velocity = Math.max(-6, Math.min(22, velocity));
-    root._approxSpeed = velocity;
-
-    steer += (steerVal - steer) * Math.min(1, 7.5 * dt);
-    root.rotation.y += steer * 0.82 * (Math.abs(velocity) / 22) * dt * 4.5;
-
-    const fwd = new BABYLON.Vector3(Math.sin(root.rotation.y), 0, Math.cos(root.rotation.y));
-    root.position.addInPlace(fwd.scale(velocity * dt * 0.12 * 60));
-
-    wheels.forEach(w => w.rotation.x += velocity * dt * 2.5);
-
-    // ground sampling
-    const centerY = sampleGroundY(root.position);
-    if (centerY !== null) {
-      const desiredY = centerY + 0.95;
-      root.position.y += (desiredY - root.position.y) * Math.min(1, 8 * dt);
-    } else root.position.y -= 9.8 * dt * 0.04;
-
-    if (root.position.y < -20) { if (window.UI && window.UI.showRetry) window.UI.showRetry(); }
-  };
-
-  return root;
+  success() {
+    this.isFinished = true;
+    this.speed = 0;
+    if (this.ui.onSuccess) this.ui.onSuccess();
+    console.log("🎉 Level complete");
+  }
 }
