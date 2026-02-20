@@ -1,109 +1,125 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <title>Mount Climb — Offroad</title>
+  <meta charset="utf-8" />
+  <title>Mount Climb — Offroad (Playful)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <meta name="description" content="Mount Climb - Offroad. Mobile-first Babylon.js driving prototype." />
 
-    <!-- MOBILE + LANDSCAPE -->
-    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no" />
-    <meta name="screen-orientation" content="landscape">
-    <meta name="orientation" content="landscape">
+  <!-- Basic inline styling to make loading screen full -->
+  <style>
+    html,body { height:100%; margin:0; padding:0; -webkit-user-select:none; user-select:none; background:#000; font-family:Inter, system-ui, Arial, sans-serif; }
+    #loading { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#07101a; z-index:9999; color:#fff; flex-direction:column; }
+    #loading img { max-width:40vw; max-height:36vh; border-radius:8px; box-shadow:0 16px 48px rgba(0,0,0,0.6); margin-bottom:16px; }
+    #loading .progress { width:60vw; max-width:560px; height:10px; background:rgba(255,255,255,0.08); border-radius:6px; overflow:hidden; margin-top:8px; }
+    #loading .bar { height:100%; width:0%; background:linear-gradient(90deg,#4facfe,#00f2fe); transition:width 120ms linear; }
+    #gameRoot { position:relative; width:100%; height:100%; overflow:hidden; }
+    canvas { width:100%; height:100%; display:block; }
 
-    <style>
-        html, body {
-            width: 100%;
-            height: 100%;
-            margin: 0;
-            padding: 0;
-            overflow: hidden;
-            background: black;
-            touch-action: none;
-            user-select: none;
-            -webkit-user-select: none;
-        }
+    /* HUD & Controls - these are basic placeholders styled by css file too */
+    #hud { position:absolute; left:12px; top:10px; color:#fff; z-index:40; pointer-events:none; }
+    #alt { position:absolute; right:12px; top:10px; color:#fff; z-index:40; pointer-events:none; }
+    .controls-col { position:absolute; bottom:22px; z-index:60; pointer-events:auto; }
+    #leftControls { left:12px; }
+    #rightControls { right:12px; display:flex; flex-direction:column; gap:12px; align-items:center; }
+    .pedal { width:100px; height:100px; border-radius:14px; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:18px; color:#fff; background: rgba(255,255,255,0.06); border:2px solid rgba(255,255,255,0.12); }
+  </style>
 
-        #renderCanvas {
-            width: 100%;
-            height: 100%;
-            touch-action: none;
-        }
-
-        /* UI CONTROLS */
-        .ui {
-            position: absolute;
-            bottom: 20px;
-            width: 100%;
-            pointer-events: none;
-        }
-
-        .left, .right {
-            position: absolute;
-            bottom: 0;
-            pointer-events: auto;
-        }
-
-        .left {
-            left: 20px;
-        }
-
-        .right {
-            right: 20px;
-        }
-
-        button {
-            width: 100px;
-            height: 100px;
-            font-size: 20px;
-            font-weight: bold;
-            border-radius: 16px;
-            border: 2px solid white;
-            background: rgba(255,255,255,0.15);
-            color: white;
-        }
-
-        button:active {
-            background: rgba(255,255,255,0.4);
-        }
-
-        /* HUD */
-        #hud {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            color: white;
-            font-family: Arial, sans-serif;
-            font-size: 18px;
-        }
-    </style>
+  <!-- Babylon & Cannon (physics) -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script src="https://cdn.babylonjs.com/cannon.js"></script>
 </head>
-
 <body>
+  <!-- Loading screen (replace image src with your own art in assets/images/) -->
+  <div id="loading" aria-hidden="false">
+    <img id="loadingImage" src="assets/images/loading.jpg" alt="Loading - Mount Climb" onerror="this.style.display='none'"/>
+    <div id="loadingText">Loading Mount Climb</div>
+    <div class="progress"><div class="bar" id="loadingBar"></div></div>
+    <div style="margin-top:10px;font-size:13px;color:#ddd" id="loadingPercent">0%</div>
+    <div style="margin-top:8px;font-size:12px;color:#bbb">Powered by Playful</div>
+  </div>
+
+  <!-- Game root -->
+  <div id="gameRoot" class="hidden">
+    <canvas id="renderCanvas" touch-action="none"></canvas>
 
     <!-- HUD -->
     <div id="hud">
-        <div id="speed">0 km/h</div>
-        <div>Level 1</div>
+      <div id="speed">0 km/h</div>
+      <div id="level" style="font-weight:700">Level 1</div>
+    </div>
+    <div id="alt">ALT: 0m</div>
+
+    <!-- Controls -->
+    <div id="leftControls" class="controls-col"></div>
+    <div id="rightControls" class="controls-col"></div>
+
+    <!-- Overlays -->
+    <div id="overlay-success" class="overlay hidden" style="display:none;position:absolute; inset:0; align-items:center; justify-content:center; z-index:200;">
+      <div style="background:linear-gradient(180deg,#222,#111); padding:20px;border-radius:12px;color:#fff;text-align:center;">
+        <h2>Summit reached!</h2>
+        <div style="margin-top:12px"><button id="playAgainBtn" style="padding:10px 14px;border-radius:8px;border:none;background:#2ea44f;color:#fff;font-weight:700">Play Again</button></div>
+      </div>
     </div>
 
-    <!-- CANVAS -->
-    <canvas id="renderCanvas"></canvas>
-
-    <!-- CONTROLS -->
-    <div class="ui">
-        <div class="left">
-            <button id="brake">BRAKE</button>
-        </div>
-        <div class="right">
-            <button id="gas">GAS</button>
-        </div>
+    <div id="overlay-retry" class="overlay hidden" style="display:none;position:absolute; inset:0; align-items:center; justify-content:center; z-index:200;">
+      <div style="background:linear-gradient(180deg,#222,#111); padding:20px;border-radius:12px;color:#fff;text-align:center;">
+        <h2>Oh no — you fell!</h2>
+        <div style="margin-top:12px"><button id="retryBtn" style="padding:10px 14px;border-radius:8px;border:none;background:#e53e3e;color:#fff;font-weight:700">Retry</button></div>
+      </div>
     </div>
 
-    <!-- BABYLON -->
-    <script src="https://cdn.babylonjs.com/babylon.js"></script>
-    <script src="https://cdn.babylonjs.com/cannon.js"></script>
+    <!-- debug banner -->
+    <div id="debugBanner" style="position:fixed;left:12px;bottom:12px;background:rgba(0,0,0,0.6);color:#fff;padding:8px 10px;border-radius:8px;z-index:9999;font-size:12px">Starting...</div>
+  </div>
 
-    <!-- GAME -->
-    <script type="module" src="./js/main.js"></script>
+  <!-- MAIN ENTRY: module loads the other JS files (main.js will import world, car, ui) -->
+  <script type="module">
+  (async function(){
+    // helper to update loader UI while we import modules and fetch assets
+    const setProgress = (p, text) => {
+      const bar = document.getElementById('loadingBar');
+      const pct = Math.round(p*100);
+      if(bar) bar.style.width = pct + '%';
+      const lp = document.getElementById('loadingPercent');
+      if(lp) lp.innerText = pct + '%';
+      const lt = document.getElementById('loadingText');
+      if(lt && text) lt.innerText = text;
+    };
+
+    setProgress(0.05, 'Preparing modules…');
+
+    // dynamic import of game modules (they will be provided next)
+    try {
+      // give the user visual progress while we import
+      setProgress(0.15, 'Loading engine modules…');
+      const mainModule = await import('./js/main.js'); // main will import world.js, car.js, ui.js
+      setProgress(0.45, 'Fetching 3D assets (car.glb) …');
+
+      // attempt to prefetch car.glb so first load checks presence
+      const carGLBUrl = 'assets/car/car.glb';
+      let carExists = false;
+      try {
+        const r = await fetch(carGLBUrl, { method: 'HEAD' });
+        if (r.ok) { carExists = true; setProgress(0.75,'car model ready'); }
+        else { setProgress(0.75,'car model not found, using procedural car'); }
+      } catch(e){ setProgress(0.75,'car model unavailable, using procedural car'); }
+
+      // start the game (main module exposes startGame)
+      setProgress(0.85, 'Starting game…');
+      await mainModule.startGame({ canvasId: 'renderCanvas', carGLBExists: carExists });
+      setProgress(1.0, 'Ready');
+      // hide loading, show game
+      document.getElementById('loading').style.display = 'none';
+      const gr = document.getElementById('gameRoot'); if(gr){ gr.style.display = 'block'; }
+    } catch (err) {
+      console.error('Startup failed', err);
+      document.getElementById('loadingText').innerText = 'Startup failed — open console';
+      setProgress(1.0,'error');
+      document.getElementById('debugBanner').innerText = 'Startup error: ' + (err && err.message ? err.message : err);
+    }
+  })();
+  </script>
 
 </body>
 </html>
