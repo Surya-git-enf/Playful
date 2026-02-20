@@ -1,309 +1,38 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Mount Climb — Offroad (Demo)</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <style>
-    /* --- Basic UI/CSS --- */
-    html,body { height:100%; margin:0; background:#000; -webkit-user-select:none; user-select:none; }
-    #renderCanvas { width:100vw; height:100vh; touch-action:none; display:block; }
-    #hud { position:absolute; top:8px; left:8px; right:8px; display:flex; justify-content:space-between; z-index:40; pointer-events:none; color:#fff; font-family:Arial,Helvetica,sans-serif; }
-    .panel { background:rgba(0,0,0,0.5); padding:8px 12px; border-radius:10px; font-weight:700; pointer-events:auto; }
-    #camBtn { pointer-events:auto; background:rgba(255,255,255,0.08); color:#fff; border:1px solid rgba(255,255,255,0.12); padding:6px 10px; border-radius:8px; }
-    /* controls container (touchable) */
-    #leftControls, #rightControls, #bottomCenter { position: absolute; bottom: 16px; z-index:60; pointer-events:auto; }
-    #leftControls { left:12px; }
-    #rightControls { right:12px; display:flex; flex-direction:column; gap:10px; align-items:center; }
-    #bottomCenter { left:50%; transform:translateX(-50%); }
-    /* steering wheel */
-    #steeringWheel { width:140px; height:140px; border-radius:50%; background: radial-gradient(circle at 35% 25%, rgba(255,255,255,0.03), rgba(0,0,0,0.16)); border:6px solid rgba(255,255,255,0.12); box-shadow:0 10px 28px rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; }
-    #steeringWheel .hub { width:44px; height:44px; border-radius:10px; background:linear-gradient(180deg, rgba(0,0,0,0.4), rgba(255,255,255,0.03)); }
-    /* pedals */
-    .pedal { width:96px; height:96px; border-radius:16px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight:700; color:#fff; background:rgba(255,255,255,0.08); border:2px solid rgba(255,255,255,0.12); box-shadow:0 8px 20px rgba(0,0,0,0.6); }
-    #accelerator { background:linear-gradient(180deg, rgba(0,255,0,0.14), rgba(0,180,0,0.06)); }
-    #brake { background:linear-gradient(180deg, rgba(255,0,0,0.14), rgba(160,0,0,0.06)); }
-    #driftBtn { width:100px; height:44px; border-radius:10px; background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.12); }
-    /* overlay */
-    #debugBanner { position:fixed; left:10px; bottom:10px; z-index:99999; background:rgba(0,0,0,0.6); color:#fff; padding:8px 12px; border-radius:8px; font-size:13px; pointer-events:none; max-width:calc(100% - 40px); }
-    /* win/retry overlay */
-    .overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.75); z-index:200; color:#fff; font-family:Arial,Helvetica,sans-serif; }
-    .overlayCard { background:linear-gradient(180deg,#222,#111); padding:20px; border-radius:12px; text-align:center; }
-    .hidden { display:none; }
-    @media (max-width:540px) {
-      #steeringWheel { width:120px; height:120px; }
-      .pedal { width:76px; height:76px; font-size:20px; }
-    }
-  </style>
-  <!-- Babylon CDN -->
-  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mount Climb — Offroad</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    <script src="https://cdn.babylonjs.com/cannon.js"></script>
 </head>
 <body>
-  <canvas id="renderCanvas"></canvas>
+    <canvas id="renderCanvas"></canvas>
 
-  <div id="hud">
-    <div id="leftHud" style="display:flex;gap:10px;">
-      <div id="speed" class="panel">0 km/h</div>
-      <div id="level" class="panel">Level 1</div>
+    <div id="ui-layer">
+        <div class="top-bar">
+            <div id="speedometer">0 <span class="unit">km/h</span></div>
+            <div id="altitude">ALT: 0m</div>
+        </div>
+
+        <div id="steering-container">
+            <img src="https://img.icons8.com/ios-filled/150/ffffff/steering-wheel.png" id="steering-wheel" alt="Steer">
+        </div>
+
+        <div id="pedal-container">
+            <div id="btn-brake" class="pedal">▼<span>BRAKE</span></div>
+            <div id="btn-gas" class="pedal">▲<span>GAS</span></div>
+        </div>
+
+        <div id="overlay" class="hidden">
+            <h1 id="status-text">SUMMIT REACHED!</h1>
+            <button onclick="location.reload()">RETRY</button>
+        </div>
     </div>
-    <div id="rightHud"><button id="camBtn" class="panel">CAM</button></div>
-  </div>
 
-  <div id="leftControls"><div id="steeringWheel"><div class="hub"></div></div></div>
-  <div id="rightControls">
-    <div id="accelerator" class="pedal">▲</div>
-    <div id="brake" class="pedal">▼</div>
-  </div>
-  <div id="bottomCenter"><button id="driftBtn">DRIFT</button></div>
-
-  <div id="overlayWin" class="overlay hidden"><div class="overlayCard"><h2>Summit reached!</h2><button onclick="location.reload()">Play again</button></div></div>
-  <div id="overlayFail" class="overlay hidden"><div class="overlayCard"><h2>You fell!</h2><button onclick="location.reload()">Retry</button></div></div>
-
-  <div id="debugBanner">Starting...</div>
-
-  <script>
-  (function(){
-
-  // debug banner helper
-  function dbg(msg, isError=false){ const d=document.getElementById('debugBanner'); if(!d) return; d.innerText = msg; d.style.background = isError ? 'rgba(180,40,40,0.95)' : 'rgba(0,0,0,0.6)'; }
-
-  // INPUT STATE
-  window.inputState = { forward:false, backward:false, steer:0, drift:false, left:false, right:false, steeringValue:0, accelerate:false, brake:false };
-
-  // UI hookups (steering wheel + pedals)
-  function initUI(){
-    dbg('Initializing UI...');
-    const wheel = document.getElementById('steeringWheel');
-    const accel = document.getElementById('accelerator');
-    const brake = document.getElementById('brake');
-    const drift = document.getElementById('driftBtn');
-    // steering
-    let active = false, centerX = 0, radius = 60, rot = 0, returnAnim = null;
-    function recalc(){ const r = wheel.getBoundingClientRect(); centerX = r.left + r.width/2; radius = r.width/2; }
-    setTimeout(recalc,120); window.addEventListener('resize', recalc);
-    function animateToZero(){ const start = performance.now(); const from=rot; if(returnAnim) cancelAnimationFrame(returnAnim); function step(t){ const p=Math.min(1,(t-start)/180); const val = from + (0-from)*(1-Math.pow(1-p,3)); rot = val; wheel.style.transform = 'rotate('+val+'deg)'; window.inputState.steer = Math.max(-1, Math.min(1, val/70)); window.inputState.steeringValue = window.inputState.steer; if(p<1) returnAnim = requestAnimationFrame(step); else { returnAnim=null; window.inputState.left=false; window.inputState.right=false; } } returnAnim = requestAnimationFrame(step); }
-    function down(e){ e.preventDefault(); active = true; recalc(); onMove(e); }
-    function onMove(e){ if(!active) return; e.preventDefault(); const clientX = (e.touches ? e.touches[0].clientX : e.clientX); const dx = clientX - centerX; let v = dx / radius; v = Math.max(-1, Math.min(1, v)); rot = v * 70; wheel.style.transform = 'rotate('+rot+'deg)'; window.inputState.steer = v; window.inputState.steeringValue = v; window.inputState.left = v < -0.18; window.inputState.right = v > 0.18; }
-    function up(e){ active = false; animateToZero(); }
-
-    wheel.addEventListener('touchstart', down, {passive:false}); wheel.addEventListener('touchmove', onMove, {passive:false}); wheel.addEventListener('touchend', up);
-    wheel.addEventListener('pointerdown', down, {passive:false}); wheel.addEventListener('pointermove', onMove, {passive:false}); wheel.addEventListener('pointerup', up);
-
-    // pedals
-    function bindHold(el, prop){
-      el.addEventListener('pointerdown', ev=>{ ev.preventDefault(); window.inputState[prop] = true; window.inputState[prop==='accelerate'?'forward':'backward'] = true; }, {passive:false});
-      el.addEventListener('pointerup', ev=>{ ev.preventDefault(); window.inputState[prop] = false; window.inputState[prop==='accelerate'?'forward':'backward'] = false; }, {passive:false});
-      el.addEventListener('touchstart', ev=>{ ev.preventDefault(); window.inputState[prop] = true; window.inputState[prop==='accelerate'?'forward':'backward'] = true; }, {passive:false});
-      el.addEventListener('touchend', ev=>{ ev.preventDefault(); window.inputState[prop] = false; window.inputState[prop==='accelerate'?'forward':'backward'] = false; }, {passive:false});
-    }
-    bindHold(accel,'accelerate'); bindHold(brake,'brake');
-    drift.addEventListener('pointerdown', ()=> window.inputState.drift=true); drift.addEventListener('pointerup', ()=> window.inputState.drift=false);
-    dbg('UI ready — use steering wheel left + accelerator right');
-  }
-
-  // WORLD builder
-  function createWorld(scene){
-    dbg('Building world...');
-    const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0,1,0), scene); hemi.intensity = 0.9;
-    const sun = new BABYLON.DirectionalLight('sun', new BABYLON.Vector3(-0.4,-1,-0.2), scene); sun.position = new BABYLON.Vector3(60,120,60); sun.intensity = 0.9;
-
-    // large ground
-    const ground = BABYLON.MeshBuilder.CreateGround('ground',{width:220, height:160, subdivisions: 2}, scene);
-    const gmat = new BABYLON.StandardMaterial('gmat', scene); gmat.diffuseColor = new BABYLON.Color3(0.12,0.48,0.12); ground.material = gmat;
-
-    // create a long road made of segments with slight rising slope
-    const roadSegments = [];
-    const segCount = 120;
-    const segLen = 3;
-    for(let i=0;i<segCount;i++){
-      const z = 80 - i * segLen;
-      const y = Math.max(0, (i/segCount)*35); // slope: 0 -> 35 units up
-      const seg = BABYLON.MeshBuilder.CreateBox('roadSeg'+i,{width:12, height:0.6, depth: segLen*0.98}, scene);
-      seg.position = new BABYLON.Vector3(0, y + 0.3, z);
-      seg.rotation = new BABYLON.Vector3(0, 0, 0);
-      const rmat = new BABYLON.StandardMaterial('rmat'+i, scene); rmat.diffuseColor = new BABYLON.Color3(0.08,0.08,0.08);
-      seg.material = rmat;
-      roadSegments.push(seg);
-    }
-
-    // lane markings
-    for(let i=0;i<segCount;i+=1){
-      const z = 80 - i * segLen;
-      const mark = BABYLON.MeshBuilder.CreateBox('m'+i,{width:0.4,height:0.05,depth:1.2},scene);
-      mark.position = new BABYLON.Vector3(0, (i/segCount)*35 + 0.6, z);
-      mark.material = new BABYLON.StandardMaterial('mm'+i,scene);
-      mark.material.diffuseColor = BABYLON.Color3.White();
-    }
-
-    // trees scatter
-    for(let i=0;i<60;i++){
-      const side = Math.random()>0.5?1:-1;
-      const x = side * (8 + Math.random()*30);
-      const z = 80 - Math.random()*segCount*segLen;
-      const y = 0;
-      const trunk = BABYLON.MeshBuilder.CreateCylinder('t'+i,{height:2, diameter:0.5},scene);
-      trunk.position = new BABYLON.Vector3(x,1,z);
-      trunk.material = new BABYLON.StandardMaterial('tm'+i,scene); trunk.material.diffuseColor = new BABYLON.Color3(0.35,0.2,0.1);
-      const leaves = BABYLON.MeshBuilder.CreateSphere('l'+i,{diameter:2.2},scene);
-      leaves.position = new BABYLON.Vector3(x,2.6,z);
-      leaves.material = new BABYLON.StandardMaterial('lm'+i,scene); leaves.material.diffuseColor = new BABYLON.Color3(0.06,0.55,0.12);
-    }
-
-    // finish platform (top)
-    const finish = BABYLON.MeshBuilder.CreateBox('finish',{width:14, height:0.8, depth:6}, scene);
-    finish.position = new BABYLON.Vector3(0, 36, 80 - (segCount-1)*segLen - 10);
-    finish.material = new BABYLON.StandardMaterial('fmat',scene); finish.material.diffuseColor = new BABYLON.Color3(0.12,0.6,0.85);
-
-    return { ground, roadSegments, finish };
-  }
-
-  // PROCEDURAL CAR builder (Thar-like)
-  function createPlayerCar(scene){
-    dbg('Creating car...');
-    const root = new BABYLON.TransformNode('carRoot', scene);
-
-    // body
-    const body = BABYLON.MeshBuilder.CreateBox('body',{width:2.1, height:0.5, depth:3.4}, scene);
-    body.parent = root; body.position.y = 1.0;
-    const bodyMat = new BABYLON.StandardMaterial('bodyMat', scene); bodyMat.diffuseColor = new BABYLON.Color3(0.18,0.35,0.12); body.material = bodyMat;
-
-    // cabin
-    const cabin = BABYLON.MeshBuilder.CreateBox('cabin',{width:1.5, height:0.6, depth:1.6},scene);
-    cabin.parent = root; cabin.position = new BABYLON.Vector3(0,1.5,-0.2); cabin.material = bodyMat;
-
-    // wheels
-    const wheels = [];
-    const wheelParams = [[-0.95, 1.3], [0.95,1.3], [-0.95,-1.25],[0.95,-1.25]];
-    wheelParams.forEach((p,i)=>{
-      const w = BABYLON.MeshBuilder.CreateCylinder('w'+i, {diameter:0.52, height:0.28, tessellation:24}, scene);
-      w.parent = root; w.rotation.z = Math.PI/2; w.position = new BABYLON.Vector3(p[0], 0.45, p[1]);
-      w.material = new BABYLON.StandardMaterial('wm'+i, scene); w.material.diffuseColor = new BABYLON.Color3(0.06,0.06,0.06);
-      wheels.push(w);
-    });
-
-    // initial
-    root.position = new BABYLON.Vector3(0, 3.2, 80);
-    root._approxSpeed = 0;
-    let velocity = 0;
-    let steer = 0;
-
-    // update method
-    root.update = function(dt, world){
-      // inputs (both names)
-      const inps = window.inputState || {};
-      const forward = !!inps.forward || !!inps.accelerate;
-      const backward = !!inps.backward || !!inps.brake;
-      const steerVal = (typeof inps.steeringValue === 'number' ? inps.steeringValue : inps.steer) || 0;
-      // params
-      const max = 18, accel = 12.5, brake = 28, drag = 0.985;
-      // longitudinal
-      if(forward) velocity += accel * dt;
-      else if(backward) velocity -= brake * dt;
-      else velocity *= Math.pow(drag, dt*60);
-      velocity = Math.max(-6, Math.min(max, velocity));
-      root._approxSpeed = velocity;
-      // steering smoothing
-      steer += (steerVal - steer) * Math.min(1, 8 * dt);
-      const yawDelta = steer * 0.9 * (Math.abs(velocity) / max) * dt * 5.2;
-      root.rotation.y += yawDelta;
-      // move forward
-      const forwardDir = new BABYLON.Vector3(Math.sin(root.rotation.y), 0, Math.cos(root.rotation.y));
-      root.position.addInPlace(forwardDir.scale(velocity * dt * 0.12 * 60));
-      // sample ground below car using ray
-      const upPos = root.position.add(new BABYLON.Vector3(0,8,0));
-      const ray = new BABYLON.Ray(upPos, new BABYLON.Vector3(0,-1,0), 20);
-      const pick = scene.pickWithRay(ray, mesh => true);
-      if(pick && pick.hit) {
-        const desiredY = pick.pickedPoint.y + 0.95;
-        root.position.y += (desiredY - root.position.y) * Math.min(1, 6 * dt);
-      } else {
-        root.position.y -= 9.8 * dt * 0.08;
-      }
-      // wheels spin & simple front wheel steer visual
-      wheels.forEach((w, idx)=> {
-        w.rotation.x += velocity * dt * 2.5;
-        if(idx===0 || idx===1) w.rotation.y = -steer * 0.6;
-      });
-      // body roll
-      const rollTarget = -steer * Math.min(1, Math.abs(velocity)/ (max*0.6)) * 0.06;
-      root.rotation.z += (rollTarget - root.rotation.z) * Math.min(1, 6 * dt);
-      // clamp X to not lose road completely
-      root.position.x = BABYLON.Scalar.Clamp(root.position.x, -28, 28);
-    };
-
-    root.getHealth = ()=>100;
-    return root;
-  }
-
-  // MAIN bootstrap
-  async function start(){
-    dbg('Starting engine...');
-    const canvas = document.getElementById('renderCanvas');
-    if(!canvas){ dbg('Canvas not found', true); return; }
-    const engine = new BABYLON.Engine(canvas, true, {preserveDrawingBuffer:true, stencil:true});
-    const scene = new BABYLON.Scene(engine);
-    scene.clearColor = new BABYLON.Color3(0.58,0.85,1);
-
-    // camera
-    const cam = new BABYLON.UniversalCamera('cam', new BABYLON.Vector3(0,5,-12), scene);
-    cam.fov = 0.95; cam.attachControl(canvas, true);
-
-    // world
-    const world = createWorld(scene);
-    // UI
-    initUI();
-
-    // car
-    const player = createPlayerCar(scene);
-    // camera follow variables
-    const camOffset = new BABYLON.Vector3(0,5.2,-12.0);
-    function updateCameraSmooth(){
-      const ang = player.rotation ? player.rotation.y : 0;
-      const ca = Math.cos(ang), sa = Math.sin(ang);
-      const off = camOffset;
-      const transformed = new BABYLON.Vector3(off.x * ca - off.z * sa, off.y, off.x * sa + off.z * ca);
-      const desired = player.position.add(transformed);
-      cam.position = BABYLON.Vector3.Lerp(cam.position, desired, 0.12);
-      const lookLocal = new BABYLON.Vector3(0,1.2,2.6);
-      const lookWorld = new BABYLON.Vector3(lookLocal.x * ca - lookLocal.z * sa, lookLocal.y, lookLocal.x * sa + lookLocal.z * ca);
-      const tgt = player.position.add(lookWorld);
-      cam.setTarget(BABYLON.Vector3.Lerp(cam.getTarget ? cam.getTarget() : cam.position, tgt, 0.18));
-    }
-
-    // UI event handlers
-    window.addEventListener('game:togglecam', ()=>{ /* could change cam mode */ });
-
-    // run loop
-    let last = performance.now();
-    engine.runRenderLoop(()=>{
-      const now = performance.now();
-      const dt = Math.min(0.06, (now - last)/1000);
-      last = now;
-      try {
-        if(player && typeof player.update === 'function') player.update(dt, world);
-        updateCameraSmooth();
-        // HUD
-        const sp = document.getElementById('speed'); if(sp) sp.innerText = Math.round(Math.abs(player._approxSpeed||0)*3.6)+' km/h';
-        // finish detection
-        if(world.finish){
-          const d = BABYLON.Vector3.Distance(player.position, world.finish.position);
-          if(d < 6){ document.getElementById('overlayWin').classList.remove('hidden'); }
-        }
-        if(player.position.y < -6){ document.getElementById('overlayFail').classList.remove('hidden'); }
-      } catch(e){
-        console.error('Frame error',e); dbg('Frame error: '+(e.message||e), true);
-      }
-      scene.render();
-    });
-
-    window.addEventListener('resize', ()=> engine.resize());
-    dbg('Running — use wheel & pedals. If black, open console.');
-  }
-
-  // start
-  start().catch(e=>{ console.error(e); dbg('Startup error: '+e.message, true); });
-
-  })();
-  </script>
+    <script type="module" src="src/main.js"></script>
 </body>
 </html>
