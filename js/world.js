@@ -1,23 +1,18 @@
 // world.js
-// Creates ground, slope road, sky, and lighting
-
 export function createWorld(scene) {
 
-    /* 🌤️ LIGHT */
+    // LIGHT
     const light = new BABYLON.HemisphericLight(
-        "sunLight",
+        "light",
         new BABYLON.Vector3(0, 1, 0),
         scene
     );
     light.intensity = 0.9;
 
-    /* 🌌 SKY COLOR */
-    scene.clearColor = new BABYLON.Color3(0.6, 0.85, 1);
-
-    /* 🟩 START GROUND (FLAT) */
+    // GROUND
     const ground = BABYLON.MeshBuilder.CreateGround(
         "ground",
-        { width: 50, height: 50 },
+        { width: 200, height: 200 },
         scene
     );
 
@@ -28,48 +23,30 @@ export function createWorld(scene) {
     ground.physicsImpostor = new BABYLON.PhysicsImpostor(
         ground,
         BABYLON.PhysicsImpostor.BoxImpostor,
-        { mass: 0, friction: 1.5, restitution: 0 },
+        { mass: 0, friction: 1 },
         scene
     );
 
-    /* 🛣️ MOUNTAIN SLOPE ROAD */
+    // MOUNTAIN ROAD (SLOPE)
     const slope = BABYLON.MeshBuilder.CreateBox(
         "slope",
-        { width: 10, height: 1, depth: 60 },
+        { width: 16, height: 1, depth: 80 },
         scene
     );
 
-    slope.position = new BABYLON.Vector3(0, 5, 40);
-    slope.rotation.x = BABYLON.Tools.ToRadians(-25); // slope angle
+    slope.position = new BABYLON.Vector3(0, 4, 40);
+    slope.rotation.x = BABYLON.Tools.ToRadians(-18);
 
     const roadMat = new BABYLON.StandardMaterial("roadMat", scene);
-    roadMat.diffuseColor = new BABYLON.Color3(0.4, 0.4, 0.4);
+    roadMat.diffuseColor = new BABYLON.Color3(0.15, 0.15, 0.15);
     slope.material = roadMat;
 
     slope.physicsImpostor = new BABYLON.PhysicsImpostor(
         slope,
         BABYLON.PhysicsImpostor.BoxImpostor,
-        { mass: 0, friction: 2.5, restitution: 0 },
+        { mass: 0, friction: 2 },
         scene
     );
 
-    /* 🏔️ END PLATFORM (TOP) */
-    const top = BABYLON.MeshBuilder.CreateGround(
-        "top",
-        { width: 20, height: 20 },
-        scene
-    );
-
-    top.position = new BABYLON.Vector3(0, 15, 75);
-
-    top.material = roadMat;
-
-    top.physicsImpostor = new BABYLON.PhysicsImpostor(
-        top,
-        BABYLON.PhysicsImpostor.BoxImpostor,
-        { mass: 0, friction: 2, restitution: 0 },
-        scene
-    );
-
-    return { ground, slope, top };
+    return { ground, slope };
 }
