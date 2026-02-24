@@ -1,135 +1,101 @@
-export function createWorld(engine, canvas) {
+// js/world.js
+// Responsible ONLY for environment: sky, ground, mountain, road, lights
 
-    const scene = new BABYLON.Scene(engine);
-    scene.clearColor = new BABYLON.Color3(0.6, 0.8, 1);
+export async function createWorld(scene) {
 
-    // PHYSICS
-    const gravityVector = new BABYLON.Vector3(0, -9.81, 0);
-    const physicsPlugin = new BABYLON.CannonJSPlugin();
-    scene.enablePhysics(gravityVector, physicsPlugin);
+  /* ---------------- LIGHT ---------------- */
+  const hemiLight = new BABYLON.HemisphericLight(
+    "hemiLight",
+    new BABYLON.Vector3(0, 1, 0),
+    scene
+  );
+  hemiLight.intensity = 0.9;
 
-    // CAMERA
-    const camera = new BABYLON.FollowCamera("followCam",
-        new BABYLON.Vector3(0, 5, -15), scene);
+  const sun = new BABYLON.DirectionalLight(
+    "sunLight",
+    new BABYLON.Vector3(-0.4, -1, -0.4),
+    scene
+  );
+  sun.position = new BABYLON.Vector3(50, 100, 50);
+  sun.intensity = 1.0;
 
-    camera.radius = 20;
-    camera.heightOffset = 6;
-    camera.rotationOffset = 180;
-    camera.cameraAcceleration = 0.05;
-    camera.maxCameraSpeed = 10;
-    camera.attachControl(canvas, true);
+  /* ---------------- SKY ---------------- */
+  const skybox = BABYLON.MeshBuilder.CreateBox(
+    "skyBox",
+    { size: 1000 },
+    scene
+  );
+  const skyMat = new BABYLON.StandardMaterial("skyMat", scene);
+  skyMat.backFaceCulling = false;
+  skyMat.disableLighting = true;
+  skyMat.diffuseColor = new BABYLON.Color3(0.5, 0.7, 1.0);
+  skyMat.specularColor = BABYLON.Color3.Black();
+  skybox.material = skyMat;
 
-    // LIGHT
-    const light = new BABYLON.HemisphericLight("light",
-        new BABYLON.Vector3(0, 1, 0), scene);
-    light.intensity = 1.2;
+  /* ---------------- GROUND ---------------- */
+  const ground = BABYLON.MeshBuilder.CreateGround(
+    "ground",
+    { width: 300, height: 300 },
+    scene
+  );
+  const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+  groundMat.diffuseColor = new BABYLON.Color3(0.25, 0.6, 0.25);
+  ground.material = groundMat;
 
-    // GROUND (Mountain base)
-    const ground = BABYLON.MeshBuilder.CreateGround("ground", {
-        width: 200,
-        height: 200,
-        subdivisions: 50
-    }, scene);
+  /* ---------------- MOUNTAIN (SLOPE) ---------------- */
+  const mountain = BABYLON.MeshBuilder.CreateBox(
+    "mountain",
+    {
+      width: 20,
+      height: 5,
+      depth: 200
+    },
+    scene
+  );
 
-    const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
-    groundMat.diffuseColor = new BABYLON.Color3(0.3, 0.25, 0.2);
-    ground.material = groundMat;
+  mountain.position.y = 2.5;
+  mountain.position.z = 80;
+  mountain.rotation.x = BABYLON.Tools.ToRadians(-18);
 
-    ground.physicsImpostor = new BABYLON.PhysicsImpostor(
-        ground,
-        BABYLON.PhysicsImpostor.BoxImpostor,
-        { mass: 0, friction: 1, restitution: 0.1 },
-        scene
-    );
+  const mountainMat = new BABYLON.StandardMaterial("mountainMat", scene);
+  mountainMat.diffuseColor = new BABYLON.Color3(0.35, 0.35, 0.35);
+  mountain.material = mountainMat;
 
-    // CREATE MOUNTAIN SLOPE
-    const slope = BABYLON.MeshBuilder.CreateBox("slope", {
-        width: 30,
-        height: 2,
-        depth: 80
-    }, scene);
+  /* ---------------- ROAD ---------------- */
+  const road = BABYLON.MeshBuilder.CreateBox(
+    "road",
+    {
+      width: 6,
+      height: 0.2,
+      depth: 200
+    },
+    scene
+  );
 
-    slope.position = new BABYLON.Vector3(0, 5, 40);
-    slope.rotation.x = Math.PI / 8;
+  road.position.y = 3;
+  road.position.z = 80;
+  road.rotation.x = BABYLON.Tools.ToRadians(-18);
 
-    const slopeMat = new BABYLON.StandardMaterial("slopeMat", scene);
-    slopeMat.diffuseColor = new BABYLON.Color3(0.2, 0.2, 0.2);
-    slope.material = slopeMat;
+  const roadMat = new BABYLON.StandardMaterial("roadMat", scene);
+  roadMat.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+  road.material = roadMat;
 
-    slope.physicsImpostor = new BABYLON.PhysicsImpostor(
-        slope,
-        BABYLON.PhysicsImpostor.BoxImpostor,
-        { mass: 0, friction: 2 },
-        scene
-    );
+  /* ---------------- FINISH LINE ---------------- */
+  const finish = BABYLON.MeshBuilder.CreateBox(
+    "finish",
+    { width: 8, height: 2, depth: 1 },
+    scene
+  );
+  finish.position.set(0, 6, 180);
+  const finishMat = new BABYLON.StandardMaterial("finishMat", scene);
+  finishMat.diffuseColor = new BABYLON.Color3(0, 1, 0);
+  finish.material = finishMat;
 
-    // CAR BODY
-    const car = BABYLON.MeshBuilder.CreateBox("car", {
-        width: 2,
-        height: 1.5,
-        depth: 4
-    }, scene);
-
-    car.position = new BABYLON.Vector3(0, 5, 0);
-
-    const carMat = new BABYLON.StandardMaterial("carMat", scene);
-    carMat.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.1);
-    car.material = carMat;
-
-    car.physicsImpostor = new BABYLON.PhysicsImpostor(
-        car,
-        BABYLON.PhysicsImpostor.BoxImpostor,
-        { mass: 800, friction: 2, restitution: 0 },
-        scene
-    );
-
-    camera.lockedTarget = car;
-
-    // CONTROLS
-    let speed = 0;
-    let steering = 0;
-
-    const gasBtn = document.getElementById("gas");
-    const brakeBtn = document.getElementById("brake");
-
-    if (gasBtn) {
-        gasBtn.addEventListener("touchstart", () => speed = 0.05);
-        gasBtn.addEventListener("touchend", () => speed = 0);
-    }
-
-    if (brakeBtn) {
-        brakeBtn.addEventListener("touchstart", () => speed = -0.03);
-        brakeBtn.addEventListener("touchend", () => speed = 0);
-    }
-
-    window.addEventListener("keydown", (e) => {
-        if (e.key === "ArrowUp") speed = 0.05;
-        if (e.key === "ArrowDown") speed = -0.03;
-        if (e.key === "ArrowLeft") steering = -0.02;
-        if (e.key === "ArrowRight") steering = 0.02;
-    });
-
-    window.addEventListener("keyup", () => {
-        speed = 0;
-        steering = 0;
-    });
-
-    // GAME LOOP UPDATE
-    scene.onBeforeRenderObservable.add(() => {
-
-        const forward = new BABYLON.Vector3(
-            Math.sin(car.rotation.y),
-            0,
-            Math.cos(car.rotation.y)
-        );
-
-        car.physicsImpostor.applyImpulse(
-            forward.scale(speed * 100),
-            car.getAbsolutePosition()
-        );
-
-        car.rotation.y += steering;
-    });
-
-    return scene;
+  /* ---------------- RETURN WORLD DATA ---------------- */
+  return {
+    ground,
+    road,
+    mountain,
+    finish
+  };
 }
