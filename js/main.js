@@ -1,210 +1,140 @@
 // js/main.js
-// Defensive startGame() — robust error logging & guards
 import { createWorld } from "./world.js";
 import { createPlayerCar } from "./car.js";
-import { GameUI } from "./ui.js";
 
-export async function startGame({ canvasId = "renderCanvas", carGLBExists = false } = {}) {
-  const dbgEl = document.getElementById("debugBanner");
-  const setDebug = (txt, isErr = false) => {
-    if (dbgEl) {
-      dbgEl.innerText = txt;
-      dbgEl.style.background = isErr ? "rgba(160,40,40,0.95)" : "rgba(0,0,0,0.6)";
-    }
-    console.log(txt);
-  };
+const canvas = document.getElementById("renderCanvas");
+const engine = new BABYLON.Engine(canvas, true, {
+  preserveDrawingBuffer: true,
+  stencil: true,
+});
 
-  try {
-    setDebug("Initializing engine...");
+let scene;
+let player;
+let world;
 
-    const canvas = document.getElementById(canvasId);
-    if (!canvas) throw new Error("Canvas not found: " + canvasId);
+window.inputState = {
+  steeringValue: 0,
+  accelerate: false,
+  brake: false,
+};
 
-    const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
-    const scene = new BABYLON.Scene(engine);
-    scene.clearColor = new BABYLON.Color3(0.58, 0.85, 1.0);
+// ---------- INPUT (mobile + desktop safe) ----------
+function setupInput() {
+  const gas = document.getElementById("btn-gas");
+  const brake = document.getElementById("btn-brake");
+  const steer = document.getElementById("steering-wheel");
 
-    // Global error handler so we capture stack traces to debugBanner
-    window.addEventListener("error", (ev) => {
-      try {
-        const msg = "Uncaught error: " + (ev.message || ev.error || ev);
-        setDebug(msg, true);
-        console.error(ev.error || ev.message, ev.error ? ev.error.stack : "");
-      } catch (e) { console.error("error handler failed", e); }
-    });
-
-    // Lights (safe)
-    try {
-      new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene).intensity = 0.9;
-      const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.4, -1, -0.2), scene);
-      sun.position = new BABYLON.Vector3(60, 120, 60);
-      sun.intensity = 0.95;
-    } catch (e) {
-      console.warn("light init failed", e);
-    }
-
-    // Create world (guarded)
-    let world = null;
-    try {
-      setDebug("Creating world...");
-      world = createWorld(scene);
-      if (!world) {
-        throw new Error("createWorld returned falsy value");
-      }
-      // show some info about returned world
-      console.log("createWorld returned keys:", Object.keys(world));
-      if (!("finish" in world)) console.warn("Warning: world.finish not present");
-      if (!("pathPoints" in world) && !("roadPieces" in world)) console.warn("Warning: world has no pathPoints or roadPieces");
-      setDebug("World created");
-    } catch (e) {
-      const msg = "createWorld() failed: " + (e && e.message ? e.message : e);
-      setDebug(msg, true);
-      console.error(e);
-      throw e;
-    }
-
-    // Instantiate UI (GameUI is exported from ui.js)
-    let ui = null;
-    try {
-      ui = new GameUI();
-      // wire up UI callbacks if they exist on DOM (optional)
-      ui.onFail = () => {
-        const el = document.getElementById("overlay-retry") || document.getElementById("failScreen");
-        if (el) el.classList.remove("hidden"), el.style.display = "flex";
-      };
-      ui.onSuccess = () => {
-        const el = document.getElementById("overlay-success") || document.getElementById("successScreen");
-        if (el) el.classList.remove("hidden"), el.style.display = "flex";
-      };
-      setDebug("UI ready");
-    } catch (e) {
-      console.warn("UI init failed, falling back to window.inputState", e);
-      window.inputState = window.inputState || { steer:0, accelerate:false, brake:false, steeringValue:0 };
-      ui = { steer:0, gas:false, brake:false };
-      setDebug("UI fallback in use");
-    }
-
-    // Create player car (guarded)
-    let player = null;
-    try {
-      setDebug("Loading car...");
-      player = await createPlayerCar(scene, !!carGLBExists);
-      if (!player) throw new Error("createPlayerCar returned falsy");
-      // debug handle
-      window.player = player;
-      setDebug("Car loaded");
-      console.log("player keys:", Object.keys(player));
-    } catch (e) {
-      console.warn("createPlayerCar failed:", e);
-      setDebug("createPlayerCar failed; attempting procedural fallback", true);
-      try {
-        player = await createPlayerCar(scene, false);
-        window.player = player;
-        setDebug("Procedural car loaded");
-      } catch (err) {
-        setDebug("Both GLB and fallback car failed", true);
-        console.error(err);
-        throw err;
-      }
-    }
-
-    // Setup camera
-    const cam = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(0,6,-12), scene);
-    cam.fov = 0.95;
-    cam.attachControl(canvas, true);
-    let camOffset = new BABYLON.Vector3(0, 5.2, -12.0);
-
-    function updateCamera(dt) {
-      if (!player) return;
-      try {
-        const ang = player.rotation ? player.rotation.y : 0;
-        const ca = Math.cos(ang), sa = Math.sin(ang);
-        const off = camOffset;
-        const transformed = new BABYLON.Vector3(off.x * ca - off.z * sa, off.y, off.x * sa + off.z * ca);
-        const desired = player.position.add(transformed);
-        cam.position = BABYLON.Vector3.Lerp(cam.position, desired, 0.12);
-        const lookLocal = new BABYLON.Vector3(0, 1.2, 2.6);
-        const lookWorld = new BABYLON.Vector3(lookLocal.x * ca - lookLocal.z * sa, lookLocal.y, lookLocal.x * sa + lookLocal.z * ca);
-        const target = player.position.add(lookWorld);
-        cam.setTarget(BABYLON.Vector3.Lerp(cam.getTarget ? cam.getTarget() : cam.position, target, 0.18));
-      } catch (e) { console.warn("camera update failed", e); }
-    }
-
-    // Main loop with defensive guards
-    let last = performance.now();
-    engine.runRenderLoop(() => {
-      const now = performance.now();
-      const dt = Math.min(0.06, (now - last) / 1000);
-      last = now;
-
-      try {
-        // call player.update only if it exists and is a function
-        if (player && typeof player.update === "function") {
-          player.update(dt, world);
-        } else if (player && typeof player.update !== "function") {
-          // If player exists but update missing, log it once
-          if (!window.__playerUpdateWarn) {
-            console.warn("player exists but has no update(dt) function");
-            window.__playerUpdateWarn = true;
-          }
-        }
-
-        // Only update camera if player has position
-        if (player && player.position) updateCamera(dt);
-
-        // HUD: safe update speed if element exists and player has _approxSpeed
-        const sp = document.getElementById("speed");
-        if (sp && player && ("_approxSpeed" in player)) {
-          sp.innerText = Math.round(Math.abs(player._approxSpeed || 0) * 3.6) + " km/h";
-        }
-
-        // Safe finish detection
-        if (world && world.finish && player && player.position) {
-          try {
-            const dist = BABYLON.Vector3.Distance(player.position, world.finish.position);
-            if (dist < 6) {
-              const el = document.getElementById("overlay-success");
-              if (el) { el.classList.remove("hidden"); el.style.display = "flex"; }
-            }
-          } catch (e) { console.warn("finish check failed", e); }
-        }
-
-        // Safe fall detection
-        if (player && player.position && typeof player.position.y === "number") {
-          if (player.position.y < -20) {
-            const el = document.getElementById("overlay-retry");
-            if (el) { el.classList.remove("hidden"); el.style.display = "flex"; }
-          }
-        }
-      } catch (e) {
-        console.error("Frame loop error:", e);
-        setDebug("Frame error: " + (e && e.message ? e.message : e), true);
-      }
-
-      try { scene.render(); } catch (e) { console.error("Scene render failed:", e); setDebug("Render failed: " + (e && e.message ? e.message : e), true); }
-    });
-
-    window.addEventListener("resize", () => engine.resize());
-    setDebug("Game started");
-    return { engine, scene, player, world };
-  } catch (err) {
-    // Top-level catch: log stack and show user
-    try {
-      console.error("startGame fatal error:", err);
-      const message = (err && err.message) ? err.message : String(err);
-      if (dbgEl) { dbgEl.innerText = "Startup error: " + message; dbgEl.style.background = "rgba(160,40,40,0.95)"; }
-    } catch (e) { console.error("Error while handling startup error", e); }
-    throw err;
+  if (gas) {
+    gas.addEventListener("touchstart", () => (inputState.accelerate = true));
+    gas.addEventListener("touchend", () => (inputState.accelerate = false));
+    gas.addEventListener("mousedown", () => (inputState.accelerate = true));
+    gas.addEventListener("mouseup", () => (inputState.accelerate = false));
   }
-              }
 
-// 1) Are modules loaded?
-console.log("window.player:", window.player);
-console.log("window.inputState (UI):", window.inputState);
+  if (brake) {
+    brake.addEventListener("touchstart", () => (inputState.brake = true));
+    brake.addEventListener("touchend", () => (inputState.brake = false));
+    brake.addEventListener("mousedown", () => (inputState.brake = true));
+    brake.addEventListener("mouseup", () => (inputState.brake = false));
+  }
 
-// 2) What did createWorld return?
-// (only if `window.player` exists or on startup after loader)
-fetch('/js/world.js').then(r=>r.text()).then(txt => console.log('world.js size', txt.length)).catch(()=>console.log('cannot read world.js'));
-console.log("scene meshes:", (window.scene && window.scene.meshes) ? window.scene.meshes.map(m=>m.name).slice(0,80) : "no scene global");
+  if (steer) {
+    let centerX = null;
 
-// 3) If a stack trace appears in console, paste it here exactly.
+    steer.addEventListener("touchstart", (e) => {
+      centerX = e.touches[0].clientX;
+    });
+
+    steer.addEventListener("touchmove", (e) => {
+      const dx = e.touches[0].clientX - centerX;
+      inputState.steeringValue = BABYLON.Scalar.Clamp(dx / 120, -1, 1);
+    });
+
+    steer.addEventListener("touchend", () => {
+      inputState.steeringValue = 0;
+      centerX = null;
+    });
+  }
+
+  // Keyboard fallback
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowUp") inputState.accelerate = true;
+    if (e.key === "ArrowDown") inputState.brake = true;
+    if (e.key === "ArrowLeft") inputState.steeringValue = -1;
+    if (e.key === "ArrowRight") inputState.steeringValue = 1;
+  });
+
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "ArrowUp") inputState.accelerate = false;
+    if (e.key === "ArrowDown") inputState.brake = false;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight")
+      inputState.steeringValue = 0;
+  });
+}
+
+// ---------- SCENE ----------
+async function createScene() {
+  scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color3(0.55, 0.8, 0.95);
+
+  // Camera (3rd person follow)
+  const camera = new BABYLON.FollowCamera(
+    "followCam",
+    new BABYLON.Vector3(0, 6, -10),
+    scene
+  );
+  camera.radius = 10;
+  camera.heightOffset = 4;
+  camera.rotationOffset = 180;
+  camera.attachControl(canvas, true);
+
+  // Light
+  const sun = new BABYLON.DirectionalLight(
+    "sun",
+    new BABYLON.Vector3(-0.3, -1, 0.3),
+    scene
+  );
+  sun.position = new BABYLON.Vector3(30, 60, -30);
+  sun.intensity = 1.2;
+
+  new BABYLON.HemisphericLight(
+    "sky",
+    new BABYLON.Vector3(0, 1, 0),
+    scene
+  );
+
+  // World
+  world = createWorld(scene);
+
+  // Player car
+  player = await createPlayerCar(scene, true);
+  camera.lockedTarget = player;
+
+  setupInput();
+
+  return scene;
+}
+
+// ---------- GAME LOOP ----------
+createScene().then(() => {
+  engine.runRenderLoop(() => {
+    const dt = engine.getDeltaTime() / 1000;
+
+    if (player && player.update) {
+      player.update(dt, world);
+    }
+
+    // HUD speed
+    const speedEl = document.getElementById("hud-speed");
+    if (speedEl && player?._approxSpeed !== undefined) {
+      speedEl.innerText = Math.abs(player._approxSpeed * 3.6).toFixed(0);
+    }
+
+    scene.render();
+  });
+});
+
+// ---------- RESIZE ----------
+window.addEventListener("resize", () => {
+  engine.resize();
+});
