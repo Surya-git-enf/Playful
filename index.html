@@ -2,124 +2,111 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Mount Climb — Offroad (Playful)</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <meta name="description" content="Mount Climb - Offroad. Mobile-first Babylon.js driving prototype." />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover" />
+  <title>Mount Climb — Offroad</title>
 
-  <!-- Basic inline styling to make loading screen full -->
-  <style>
-    html,body { height:100%; margin:0; padding:0; -webkit-user-select:none; user-select:none; background:#000; font-family:Inter, system-ui, Arial, sans-serif; }
-    #loading { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#07101a; z-index:9999; color:#fff; flex-direction:column; }
-    #loading img { max-width:40vw; max-height:36vh; border-radius:8px; box-shadow:0 16px 48px rgba(0,0,0,0.6); margin-bottom:16px; }
-    #loading .progress { width:60vw; max-width:560px; height:10px; background:rgba(255,255,255,0.08); border-radius:6px; overflow:hidden; margin-top:8px; }
-    #loading .bar { height:100%; width:0%; background:linear-gradient(90deg,#4facfe,#00f2fe); transition:width 120ms linear; }
-    #gameRoot { position:relative; width:100%; height:100%; overflow:hidden; }
-    canvas { width:100%; height:100%; display:block; }
+  <!-- Styles -->
+  <link rel="stylesheet" href="css/style.css">
 
-    /* HUD & Controls - these are basic placeholders styled by css file too */
-    #hud { position:absolute; left:12px; top:10px; color:#fff; z-index:40; pointer-events:none; }
-    #alt { position:absolute; right:12px; top:10px; color:#fff; z-index:40; pointer-events:none; }
-    .controls-col { position:absolute; bottom:22px; z-index:60; pointer-events:auto; }
-    #leftControls { left:12px; }
-    #rightControls { right:12px; display:flex; flex-direction:column; gap:12px; align-items:center; }
-    .pedal { width:100px; height:100px; border-radius:14px; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:18px; color:#fff; background: rgba(255,255,255,0.06); border:2px solid rgba(255,255,255,0.12); }
-  </style>
-
-  <!-- Babylon & Cannon (physics) -->
+  <!-- Babylon & utilities -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+  <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
   <script src="https://cdn.babylonjs.com/cannon.js"></script>
+
+  <meta name="description" content="Mount Climb — Offroad driving demo (mobile-first).">
+  <style>
+    /* A minimal fallback so page looks good even before css/style.css loads */
+    html,body { height:100%; margin:0; background:#07101a; color:#fff; font-family:Inter,system-ui,Arial,sans-serif; }
+    #renderCanvas { width:100vw; height:100vh; display:block; }
+    .hidden { display:none !important; }
+  </style>
 </head>
 <body>
-  <!-- Loading screen (replace image src with your own art in assets/images/) -->
-  <div id="loading" aria-hidden="false">
-    <img id="loadingImage" src="assets/images/loading.jpg" alt="Loading - Mount Climb" onerror="this.style.display='none'"/>
-    <div id="loadingText">Loading Mount Climb</div>
-    <div class="progress"><div class="bar" id="loadingBar"></div></div>
-    <div style="margin-top:10px;font-size:13px;color:#ddd" id="loadingPercent">0%</div>
-    <div style="margin-top:8px;font-size:12px;color:#bbb">Powered by Playful</div>
-  </div>
+  <!-- 3D Canvas -->
+  <canvas id="renderCanvas" touch-action="none" aria-label="Game view"></canvas>
 
-  <!-- Game root -->
-  <div id="gameRoot" class="hidden">
-    <canvas id="renderCanvas" touch-action="none"></canvas>
+  <!-- UI Layer -->
+  <div id="ui-layer" aria-hidden="false" style="pointer-events:none">
 
-    <!-- HUD -->
-    <div id="hud">
-      <div id="speed">0 km/h</div>
-      <div id="level" style="font-weight:700">Level 1</div>
+    <!-- Loading screen (show until JS hides it) -->
+    <div id="loading" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;z-index:9999;background:#07101a;">
+      <img id="loadingImage" src="assets/images/loading.jpg" alt="Mount Climb" style="max-width:40vw;max-height:24vh;border-radius:8px;box-shadow:0 20px 40px rgba(0,0,0,0.6)" onerror="this.style.display='none'">
+      <h1 style="margin:14px 0 6px;font-size:20px;letter-spacing:2px">MOUNT CLIMB</h1>
+      <div id="loadingText" style="color:#c9d6df;margin-bottom:8px">Initializing engine…</div>
+      <div style="width:60vw;max-width:520px;height:10px;background:rgba(255,255,255,0.06);border-radius:8px;overflow:hidden">
+        <div id="loadingBar" style="width:0%;height:100%;background:linear-gradient(90deg,#4facfe,#00f2fe)"></div>
+      </div>
+      <div style="margin-top:8px;font-size:13px;color:#9fb4c8">Powered by Playful</div>
     </div>
-    <div id="alt">ALT: 0m</div>
 
-    <!-- Controls -->
-    <div id="leftControls" class="controls-col"></div>
-    <div id="rightControls" class="controls-col"></div>
-
-    <!-- Overlays -->
-    <div id="overlay-success" class="overlay hidden" style="display:none;position:absolute; inset:0; align-items:center; justify-content:center; z-index:200;">
-      <div style="background:linear-gradient(180deg,#222,#111); padding:20px;border-radius:12px;color:#fff;text-align:center;">
-        <h2>Summit reached!</h2>
-        <div style="margin-top:12px"><button id="playAgainBtn" style="padding:10px 14px;border-radius:8px;border:none;background:#2ea44f;color:#fff;font-weight:700">Play Again</button></div>
+    <!-- HUD (hidden until loaded) -->
+    <div id="hud" class="hidden" aria-hidden="true" style="position:fixed;top:10px;left:14px;z-index:80;pointer-events:none">
+      <div id="hud-top" style="display:flex;align-items:center;gap:12px">
+        <button id="btn-camera" class="small-btn" aria-label="Switch camera" style="pointer-events:auto">CAM</button>
+        <div id="speed-panel" style="pointer-events:none;display:flex;flex-direction:column">
+          <div id="hud-speed" style="font-weight:700;font-size:18px">0</div>
+          <div style="font-size:12px;opacity:0.8">km/h</div>
+        </div>
       </div>
     </div>
 
-    <div id="overlay-retry" class="overlay hidden" style="display:none;position:absolute; inset:0; align-items:center; justify-content:center; z-index:200;">
-      <div style="background:linear-gradient(180deg,#222,#111); padding:20px;border-radius:12px;color:#fff;text-align:center;">
-        <h2>Oh no — you fell!</h2>
-        <div style="margin-top:12px"><button id="retryBtn" style="padding:10px 14px;border-radius:8px;border:none;background:#e53e3e;color:#fff;font-weight:700">Retry</button></div>
+    <!-- Steering wheel (left) -->
+    <div id="steering-wrap" style="position:fixed;left:14px;bottom:14px;z-index:80;pointer-events:auto">
+      <div id="steering-wheel" aria-label="Steering wheel" role="slider" tabindex="0" style="width:150px;height:150px;border-radius:50%;display:flex;align-items:center;justify-content:center;touch-action:none;user-select:none;">
+        <!-- optional inline svg or image; CSS file will style it -->
+        <div style="width:64px;height:64px;border-radius:10px;background:rgba(255,255,255,0.9)"></div>
       </div>
     </div>
 
-    <!-- debug banner -->
-    <div id="debugBanner" style="position:fixed;left:12px;bottom:12px;background:rgba(0,0,0,0.6);color:#fff;padding:8px 10px;border-radius:8px;z-index:9999;font-size:12px">Starting...</div>
+    <!-- Pedals (right) -->
+    <div id="pedals-wrap" style="position:fixed;right:14px;bottom:18px;z-index:80;pointer-events:auto;display:flex;flex-direction:column;gap:12px;align-items:center">
+      <button id="btn-brake" aria-label="Brake" class="pedal brake-pedal" style="pointer-events:auto;padding:12px 18px;border-radius:12px">BRAKE</button>
+      <button id="btn-gas" aria-label="Gas" class="pedal accel-pedal" style="pointer-events:auto;padding:12px 18px;border-radius:12px">GAS</button>
+    </div>
+
+    <!-- Overlay: failure -->
+    <div id="overlay-retry" class="hidden" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:200;pointer-events:auto;background:rgba(0,0,0,0.6)">
+      <div style="background:linear-gradient(180deg,#222,#111);padding:22px;border-radius:12px;color:#fff;text-align:center;max-width:92%;width:420px">
+        <h2 style="margin:0 0 8px">Oh no — you fell!</h2>
+        <p style="margin:0 0 12px;opacity:0.9">Your vehicle fell off the route. Try again.</p>
+        <div style="display:flex;gap:12px;justify-content:center">
+          <button id="retryBtn" class="action-btn" style="padding:10px 14px;border-radius:8px;background:#2ea44f;color:#fff;border:none">Retry</button>
+          <button id="btn-back" class="action-btn" style="padding:10px 14px;border-radius:8px;background:#888;color:#fff;border:none">Back</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Overlay: success -->
+    <div id="overlay-success" class="hidden" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:200;pointer-events:auto;background:rgba(0,0,0,0.6)">
+      <div style="background:linear-gradient(180deg,#222,#111);padding:22px;border-radius:12px;color:#fff;text-align:center;max-width:92%;width:420px">
+        <h2 style="margin:0 0 8px">Summit reached!</h2>
+        <p style="margin:0 0 12px;opacity:0.9">You conquered the peak. Ready for the next level?</p>
+        <div style="display:flex;gap:12px;justify-content:center">
+          <button id="playAgainBtn" class="action-btn" style="padding:10px 14px;border-radius:8px;background:#2094ff;color:#fff;border:none">Play Again</button>
+          <button id="btn-next" class="action-btn" style="padding:10px 14px;border-radius:8px;background:#ffd166;color:#111;border:none">Next Level</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- legacy elements (some earlier code references these ids) -->
+    <div id="fail-screen" class="hidden"></div>
+    <div id="success-screen" class="hidden"></div>
+
+    <!-- Debug banner -->
+    <div id="debugBanner" style="position:fixed;left:12px;bottom:12px;z-index:999;color:#fff;background:rgba(0,0,0,0.6);padding:8px 12px;border-radius:8px;font-size:12px">Initializing...</div>
+
   </div>
 
-  <!-- MAIN ENTRY: module loads the other JS files (main.js will import world, car, ui) -->
-  <script type="module">
-  (async function(){
-    // helper to update loader UI while we import modules and fetch assets
-    const setProgress = (p, text) => {
-      const bar = document.getElementById('loadingBar');
-      const pct = Math.round(p*100);
-      if(bar) bar.style.width = pct + '%';
-      const lp = document.getElementById('loadingPercent');
-      if(lp) lp.innerText = pct + '%';
-      const lt = document.getElementById('loadingText');
-      if(lt && text) lt.innerText = text;
-    };
+  <!-- App entry (module) -->
+  <script type="module" src="js/main.js"></script>
 
-    setProgress(0.05, 'Preparing modules…');
-
-    // dynamic import of game modules (they will be provided next)
-    try {
-      // give the user visual progress while we import
-      setProgress(0.15, 'Loading engine modules…');
-      const mainModule = await import('./js/main.js'); // main will import world.js, car.js, ui.js
-      setProgress(0.45, 'Fetching 3D assets (car.glb) …');
-
-      // attempt to prefetch car.glb so first load checks presence
-      const carGLBUrl = 'assets/car/car.glb';
-      let carExists = false;
-      try {
-        const r = await fetch(carGLBUrl, { method: 'HEAD' });
-        if (r.ok) { carExists = true; setProgress(0.75,'car model ready'); }
-        else { setProgress(0.75,'car model not found, using procedural car'); }
-      } catch(e){ setProgress(0.75,'car model unavailable, using procedural car'); }
-
-      // start the game (main module exposes startGame)
-      setProgress(0.85, 'Starting game…');
-      await mainModule.startGame({ canvasId: 'renderCanvas', carGLBExists: carExists });
-      setProgress(1.0, 'Ready');
-      // hide loading, show game
-      document.getElementById('loading').style.display = 'none';
-      const gr = document.getElementById('gameRoot'); if(gr){ gr.style.display = 'block'; }
-    } catch (err) {
-      console.error('Startup failed', err);
-      document.getElementById('loadingText').innerText = 'Startup failed — open console';
-      setProgress(1.0,'error');
-      document.getElementById('debugBanner').innerText = 'Startup error: ' + (err && err.message ? err.message : err);
-    }
-  })();
+  <!-- Small safety script: ensure UI is not accidentally selectable during touch -->
+  <script>
+    document.addEventListener('touchstart', function(){}, {passive:true});
+    // Hook retry/play buttons to reload if user clicks without JS integration yet
+    document.getElementById('retryBtn')?.addEventListener('click', ()=> location.reload());
+    document.getElementById('playAgainBtn')?.addEventListener('click', ()=> location.reload());
   </script>
-
 </body>
 </html>
