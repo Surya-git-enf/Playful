@@ -1,313 +1,458 @@
-# app_single_improved.py
+# main.py
 """
-Playful POC: import preview -> sanitize -> commit to GitHub -> attempt to enable Pages
-Usage (dev):
-  pip install fastapi uvicorn playwright requests python-dotenv
-  python -m playwright install
-  export PLAYFUL_GH_TOKEN="ghp_xxx"
-  export GITHUB_OWNER="playful"
-  uvicorn app_single_improved:app --reload --port 3000
+Playful backend - Single-file service
+- Supabase users table stores chat_history as JSON: { "<game_name>": [ {role,content,ts}, ... ] }
+- POST /generate-and-commit -> background job (WebSocket stream) -> AI manifest -> commit to GitHub -> enable Pages -> return preview_url
+- POST /build-apk -> triggers GitHub Actions workflow_dispatch on the relevant repo (repo = username under GITHUB_OWNER) with folder input
+- WebSocket at /ws/{job_id} streams status updates for frontend
 
-Notes:
-- This is a POC for development/testing. Run inside a container when exposing publicly.
-- The script enforces file-size limits and sanitizes certain JS constructs.
+Environment variables (see ENV.md):
+- SUPABASE_URL, SUPABASE_KEY (service role)
+- PLAYFUL_GH_TOKEN (GitHub PAT)
+- GITHUB_OWNER (org/owner where repos will be created)
+- GEMINI_API_ENDPOINT, GEMINI_API_KEY
+- OPTIONAL: PLAYFUL_ADMOB_BANNER_ID, PLAYFUL_ADMOB_INTERSTITIAL_ID
 """
+
 import os
 import re
-import shutil
-import uuid
 import json
-import base64
 import time
-from pathlib import Path
-from urllib.parse import urlparse
-import logging
-import tempfile
+import uuid
+import base64
+import asyncio
+from typing import Any, Dict, List, Optional
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
-from playwright.sync_api import sync_playwright
+from supabase import create_client
 
-# Config from env
-GITHUB_API = "https://api.github.com"
+# ---- CONFIG from env ----
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 PLAYFUL_GH_TOKEN = os.getenv("PLAYFUL_GH_TOKEN")
-GITHUB_OWNER = os.getenv("GITHUB_OWNER", "playful")
-MAX_RESOURCE_SIZE_MB = int(os.getenv("MAX_RESOURCE_SIZE_MB", "30"))  # limit asset download size
-IMPORT_TIMEOUT_SECONDS = int(os.getenv("IMPORT_TIMEOUT_SECONDS", "120"))
+GITHUB_OWNER = os.getenv("GITHUB_OWNER", "playful-git-enf")
+GEMINI_API_ENDPOINT = os.getenv("GEMINI_API_ENDPOINT")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+PLAYFUL_ADMOB_BANNER_ID = os.getenv("PLAYFUL_ADMOB_BANNER_ID", "")
+PLAYFUL_ADMOB_INTERSTITIAL_ID = os.getenv("PLAYFUL_ADMOB_INTERSTITIAL_ID", "")
 
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Set SUPABASE_URL and SUPABASE_KEY")
 if not PLAYFUL_GH_TOKEN:
-    raise RuntimeError("Set PLAYFUL_GH_TOKEN in environment")
+    raise RuntimeError("Set PLAYFUL_GH_TOKEN")
+if not GEMINI_API_ENDPOINT or not GEMINI_API_KEY:
+    # we will allow simulation of AI for testing, but warn
+    print("Warning: GEMINI_API_ENDPOINT or GEMINI_API_KEY not set — call_gemini will fail until set.")
 
-HEADERS = {
-    "Authorization": f"token {PLAYFUL_GH_TOKEN}",
-    "Accept": "application/vnd.github+json"
-}
+# ---- Init supabase ----
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+app = FastAPI(title="Playful Backend")
 
-app = FastAPI(title="Playful Import + Commit POC")
+# ---- simple in-memory websocket manager & job store (POC) ----
+class WSManager:
+    def __init__(self):
+        self.clients: Dict[str, List[WebSocket]] = {}
+        self.lock = asyncio.Lock()
 
-class ImportRequest(BaseModel):
-    previewUrl: str
-    username: str
-    project: str
-    visibility: str = "public"  # or private
+    async def connect(self, job_id: str, ws: WebSocket):
+        await ws.accept()
+        async with self.lock:
+            self.clients.setdefault(job_id, []).append(ws)
 
-# Utility helpers
-def safe_filename(s: str) -> str:
-    return re.sub(r'[^a-zA-Z0-9_\-\.]', '_', s)
+    async def disconnect(self, job_id: str, ws: WebSocket):
+        async with self.lock:
+            if job_id in self.clients and ws in self.clients[job_id]:
+                self.clients[job_id].remove(ws)
 
-def to_local_path(webdir: Path, url: str) -> Path:
-    try:
-        p = urlparse(url)
-        host = safe_filename(p.hostname or 'host')
-        path = p.path or '/'
-        if path.endswith('/') or path == '':
-            path = path + 'index.html'
-        local = webdir / 'assets' / host / path.lstrip('/')
-        return local
-    except Exception:
-        return webdir / 'assets' / 'unknown' / safe_filename(url)
+    async def send(self, job_id: str, payload: Dict[str, Any]):
+        async with self.lock:
+            sockets = list(self.clients.get(job_id, []))
+        for ws in sockets:
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                await self.disconnect(job_id, ws)
 
-def download_resource(url: str, dest: Path, timeout=30):
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with requests.get(url, timeout=timeout, stream=True) as r:
-            r.raise_for_status()
-            total = 0
-            with open(dest, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > (MAX_RESOURCE_SIZE_MB * 1024 * 1024):
-                        logging.warning("Skipping large resource %s (>%d MB)", url, MAX_RESOURCE_SIZE_MB)
-                        return False
-                    f.write(chunk)
-        return True
-    except Exception as e:
-        logging.warning("Failed to download %s -> %s", url, e)
-        return False
+ws = WSManager()
+JOB_STORE: Dict[str, Dict[str, Any]] = {}
 
-# Sanitizer rudiments
-JS_DANGER_PATTERNS = [r'\beval\s*\(', r'new\s+Function\s*\(']
+# ---- utilities ----
+def slugify(s: str) -> str:
+    s = s.strip().lower()
+    s = re.sub(r'[\s]+', '-', s)
+    s = re.sub(r'[^a-z0-9\-]', '', s)
+    s = re.sub(r'-{2,}', '-', s)
+    return s.strip('-')
 
-def sanitize_js_file(path: Path):
-    try:
-        text = path.read_text(encoding='utf8', errors='ignore')
-        for pat in JS_DANGER_PATTERNS:
-            if re.search(pat, text):
-                logging.info("Sanitizing JS file %s", path)
-                path.write_text("// sanitized by Playful\n", encoding='utf8')
-                return True
-    except Exception as e:
-        logging.warning("sanitize error %s -> %s", path, e)
-    return False
+def safe_username_from_name(name: str) -> str:
+    # remove spaces, lowercase, replace spaces with '-' per your instruction
+    return re.sub(r'[^a-z0-9\-]', '-', name.strip().lower())
 
-# GitHub helpers (basic)
-def ensure_repo(owner: str, repo: str, private=False):
-    r = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}", headers=HEADERS)
+# ---- models ----
+class GenerateRequest(BaseModel):
+    email: str
+    game_name: str
+    prompt: str
+
+class AppendRequest(BaseModel):
+    email: str
+    game_name: str
+    role: str
+    content: str
+
+class BuildRequest(BaseModel):
+    email: str
+    game_name: str
+    admob_ids: Optional[Dict[str,str]] = None  # optional: banner/interstitial
+
+# ---- Supabase helpers (users table holds chat_history JSON) ----
+def get_user_by_email(email: str) -> Optional[Dict]:
+    r = supabase.table("users").select("*").eq("email", email).maybe_single().execute()
+    if r.error:
+        raise RuntimeError(f"Supabase error: {r.error.message}")
+    return r.data
+
+def upsert_user(user_row: Dict):
+    r = supabase.table("users").upsert(user_row).execute()
+    if r.error:
+        raise RuntimeError(f"Supabase upsert error: {r.error.message}")
+    return r.data
+
+def append_chat_history(email: str, game_name: str, role: str, content: str):
+    user = get_user_by_email(email)
+    if not user:
+        raise HTTPException(status_code=404, detail="user not found")
+    history = user.get("chat_history") or {}
+    # ensure last 40 messages per game only
+    arr = history.get(game_name, [])
+    arr.append({"role": role, "content": content, "ts": int(time.time())})
+    arr = arr[-40:]
+    history[game_name] = arr
+    res = supabase.table("users").update({"chat_history": history}).eq("email", email).execute()
+    if res.error:
+        raise RuntimeError(f"Supabase update error: {res.error.message}")
+    return {"ok": True, "len": len(arr)}
+
+def get_last_messages(email: str, game_name: str, last_n: int = 12):
+    user = get_user_by_email(email)
+    if not user:
+        return []
+    history = user.get("chat_history") or {}
+    arr = history.get(game_name, [])
+    return arr[-last_n:]
+
+# ---- GitHub helpers (commit files into path username/game_folder/) ----
+GITHUB_API = "https://api.github.com"
+GH_HEADERS = {"Authorization": f"token {PLAYFUL_GH_TOKEN}", "Accept": "application/vnd.github+json"}
+
+def ensure_repo_for_username(username: str):
+    """
+    Create a repo under GITHUB_OWNER with name = username (if not exists).
+    This matches preview URL pattern: https://{GITHUB_OWNER}.github.io/{username}/{game_folder}/index.html
+    """
+    repo = username
+    url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{repo}"
+    r = requests.get(url, headers=GH_HEADERS)
     if r.status_code == 200:
         return True
-    # create in org
-    payload = {"name": repo, "private": private, "auto_init": False}
-    r2 = requests.post(f"{GITHUB_API}/orgs/{owner}/repos", headers=HEADERS, json=payload)
-    if r2.status_code >= 400:
-        # fallback: create user repo
-        r3 = requests.post(f"{GITHUB_API}/user/repos", headers=HEADERS, json={"name": repo, "private": private})
-        if r3.status_code >= 400:
-            raise RuntimeError(f"Failed to create repo: {r2.status_code} {r2.text} / {r3.status_code} {r3.text}")
-    return True
+    # create repo in org
+    payload = {"name": repo, "private": False, "auto_init": False}
+    cr = requests.post(f"{GITHUB_API}/orgs/{GITHUB_OWNER}/repos", headers=GH_HEADERS, json=payload)
+    if cr.status_code in (201,202):
+        return True
+    # fallback to creating user repo — usually not allowed with org token; raise error
+    raise RuntimeError(f"Failed to ensure repo for username '{username}': {cr.status_code} {cr.text}")
 
-def get_ref_sha(owner: str, repo: str, branch: str = "main"):
-    r = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}", headers=HEADERS)
+def get_branch_sha(owner: str, repo: str, branch: str = "main") -> Optional[str]:
+    r = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}", headers=GH_HEADERS)
     if r.status_code == 200:
         return r.json()["object"]["sha"]
     return None
 
-def create_readme_if_missing(owner, repo, branch="main"):
-    if get_ref_sha(owner, repo, branch):
+def create_readme_if_missing(owner: str, repo: str, branch: str = "main"):
+    if get_branch_sha(owner, repo, branch):
         return
     content = base64.b64encode(f"# {repo}\n\nGenerated by Playful".encode()).decode()
-    payload = {"message": "init repo", "content": content, "branch": branch}
-    r = requests.put(f"{GITHUB_API}/repos/{owner}/{repo}/contents/README.md", headers=HEADERS, json=payload)
-    if r.status_code >= 400:
+    payload = {"message":"init repo", "content": content, "branch": branch}
+    r = requests.put(f"{GITHUB_API}/repos/{owner}/{repo}/contents/README.md", headers=GH_HEADERS, json=payload)
+    if r.status_code not in (201,200):
         raise RuntimeError(f"Failed to init repo: {r.status_code} {r.text}")
 
-def read_files_map(local_folder: Path):
-    files = {}
-    for f in local_folder.rglob("*"):
-        if f.is_file():
-            rel = f.relative_to(local_folder).as_posix()
-            files[rel] = f.read_bytes()
-    return files
-
-def bulk_commit(owner: str, repo: str, branch: str, project_folder: str, local_folder: Path, message: str):
-    ensure_repo(owner, repo)
+def commit_files(owner: str, repo: str, branch: str, folder: str, files: List[Dict[str,Any]], commit_message: str = "Playful AI commit"):
+    """
+    files: list of {"path":"index.html", "type":"text" or "binary_base64", "content": "<...>"}
+    We'll create blobs, tree entries with paths = f"{folder}/{path}" and commit.
+    """
+    ensure_repo_for_username(repo)
     create_readme_if_missing(owner, repo, branch)
-    ref_sha = get_ref_sha(owner, repo, branch)
+    ref_sha = get_branch_sha(owner, repo, branch)
     if not ref_sha:
-        raise RuntimeError("Missing branch/ref")
-    commit_resp = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/git/commits/{ref_sha}", headers=HEADERS)
+        raise RuntimeError("Missing branch ref (main)")
+
+    commit_resp = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/git/commits/{ref_sha}", headers=GH_HEADERS)
     if commit_resp.status_code >= 400:
-        raise RuntimeError(f"Failed to get commit: {commit_resp.status_code} {commit_resp.text}")
+        raise RuntimeError(f"Failed to fetch base commit: {commit_resp.status_code} {commit_resp.text}")
     base_tree_sha = commit_resp.json()["tree"]["sha"]
 
-    local_files = read_files_map(local_folder)
-    if not local_files:
-        raise RuntimeError("No files found to commit")
-
     tree_items = []
-    for rel, content in local_files.items():
-        b64 = base64.b64encode(content).decode()
-        blob_resp = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/blobs", headers=HEADERS, json={"content": b64, "encoding": "base64"})
-        if blob_resp.status_code >= 400:
-            logging.warning("Blob create failed for %s: %s", rel, blob_resp.text)
+    for f in files:
+        p = f.get("path")
+        if not p:
             continue
-        blob_sha = blob_resp.json()["sha"]
-        path_in_repo = f"{project_folder}/{rel}"
-        tree_items.append({"path": path_in_repo, "mode": "100644", "type": "blob", "sha": blob_sha})
-
-    if not tree_items:
-        raise RuntimeError("No blobs created successfully")
+        path_in_repo = f"{folder}/{p}".lstrip("/")
+        ftype = f.get("type","text")
+        cnt = f.get("content","")
+        if ftype == "binary_base64":
+            blob_payload = {"content": cnt, "encoding":"base64"}
+        else:
+            b64 = base64.b64encode(cnt.encode()).decode()
+            blob_payload = {"content": b64, "encoding":"base64"}
+        br = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/blobs", headers=GH_HEADERS, json=blob_payload)
+        if br.status_code >= 400:
+            raise RuntimeError(f"Failed to create blob for {path_in_repo}: {br.status_code} {br.text}")
+        blob_sha = br.json()["sha"]
+        tree_items.append({"path": path_in_repo, "mode":"100644", "type":"blob", "sha": blob_sha})
 
     tree_payload = {"base_tree": base_tree_sha, "tree": tree_items}
-    tree_resp = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/trees", headers=HEADERS, json=tree_payload)
-    if tree_resp.status_code >= 400:
-        raise RuntimeError(f"create tree failed: {tree_resp.status_code} {tree_resp.text}")
-    new_tree_sha = tree_resp.json()["sha"]
+    tr = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/trees", headers=GH_HEADERS, json=tree_payload)
+    if tr.status_code >= 400:
+        raise RuntimeError(f"Failed to create tree: {tr.status_code} {tr.text}")
+    new_tree_sha = tr.json()["sha"]
 
-    commit_payload = {"message": message, "tree": new_tree_sha, "parents": [ref_sha]}
-    commit_resp = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/commits", headers=HEADERS, json=commit_payload)
-    if commit_resp.status_code >= 400:
-        raise RuntimeError(f"create commit failed: {commit_resp.status_code} {commit_resp.text}")
-    new_commit_sha = commit_resp.json()["sha"]
+    commit_payload = {"message": commit_message, "tree": new_tree_sha, "parents":[ref_sha]}
+    cr = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/commits", headers=GH_HEADERS, json=commit_payload)
+    if cr.status_code >= 400:
+        raise RuntimeError(f"Failed to create commit: {cr.status_code} {cr.text}")
+    new_commit_sha = cr.json()["sha"]
 
-    update_resp = requests.patch(f"{GITHUB_API}/repos/{owner}/{repo}/git/refs/heads/{branch}", headers=HEADERS, json={"sha": new_commit_sha})
-    if update_resp.status_code >= 400:
-        raise RuntimeError(f"update ref failed: {update_resp.status_code} {update_resp.text}")
+    up = requests.patch(f"{GITHUB_API}/repos/{owner}/{repo}/git/refs/heads/{branch}", headers=GH_HEADERS, json={"sha": new_commit_sha})
+    if up.status_code >= 400:
+        raise RuntimeError(f"Failed to update ref: {up.status_code} {up.text}")
 
-    return {"ok": True, "commit_sha": new_commit_sha}
+    return {"commit_sha": new_commit_sha}
 
-def attempt_enable_pages(owner: str, repo: str):
+def enable_pages(owner: str, repo: str):
+    r = requests.put(f"{GITHUB_API}/repos/{owner}/{repo}/pages", headers=GH_HEADERS, json={"source":{"branch":"main","path":"/"}})
+    return {"status": r.status_code, "text": r.text}
+
+# ---- AI wrapper (Gemini generic) ----
+def call_gemini(prompt: str) -> Dict[str, Any]:
+    """
+    Call your GEMINI_API_ENDPOINT with GEMINI_API_KEY.
+    Expect returned text containing a JSON manifest as described in prompt.
+    If the provider returns a JSON body with the content already parsed, adapt accordingly.
+    """
+    if not GEMINI_API_ENDPOINT or not GEMINI_API_KEY:
+        raise RuntimeError("Gemini endpoint/key not configured")
+    payload = {
+        "prompt": prompt,
+        "max_tokens": 6000,
+        "temperature": 0.2,
+    }
+    headers = {"Authorization": f"Bearer {GEMINI_API_KEY}", "Content-Type": "application/json"}
+    r = requests.post(GEMINI_API_ENDPOINT, headers=headers, json=payload, timeout=120)
+    if r.status_code >= 400:
+        raise RuntimeError(f"AI call failed: {r.status_code} {r.text}")
+    data = r.json()
+    # Try to extract text/json from response — provider-dependent.
+    # Many providers return data['output'] or data['candidates'][0]['content'] — adapt if needed.
+    text = None
+    if isinstance(data, dict):
+        if "output" in data and isinstance(data["output"], str):
+            text = data["output"]
+        elif "candidates" in data and isinstance(data["candidates"], list):
+            text = data["candidates"][0].get("content") or data["candidates"][0].get("text")
+        elif "content" in data:
+            # could be direct
+            text = data["content"]
+        else:
+            # fallback: stringify
+            text = json.dumps(data)
+    else:
+        text = str(data)
+    # extract JSON manifest from text
+    first = text.find("{")
+    last = text.rfind("}")
+    if first == -1 or last == -1 or last <= first:
+        raise RuntimeError("AI did not return valid JSON manifest")
+    js = text[first:last+1]
+    manifest = json.loads(js)
+    return manifest
+
+# ---- sanitizer simplistic ----
+def sanitize_manifest_files(files: List[Dict[str, Any]]):
+    safe = []
+    for f in files:
+        p = f.get("path","")
+        typ = f.get("type","text")
+        content = f.get("content","")
+        if typ == "text":
+            # strip dangerous patterns
+            content = re.sub(r'\beval\s*\(', '//[stripped eval](', content)
+            content = re.sub(r'new\s+Function\s*\(', '//[stripped new Function](', content)
+            safe.append({"path": p, "type":"text", "content": content})
+        elif typ == "binary_base64":
+            # ensure not huge
+            size_bytes = (len(content) * 3)//4
+            if size_bytes > 50*1024*1024:
+                raise RuntimeError(f"Binary file {p} too large")
+            safe.append({"path": p, "type":"binary_base64", "content": content})
+        else:
+            raise RuntimeError("Unknown file type")
+    return safe
+
+# ---- credit estimator (100 lines = 2 credits; base 5; 0.5/file; glb extra) ----
+def estimate_credits(files: List[Dict[str, Any]]) -> int:
+    base = 5
+    per_file = 0.5 * len(files)
+    total_lines = 0
+    complex_cost = 0
+    for f in files:
+        p = f.get("path","").lower()
+        if p.endswith((".glb",".gltf",".zip")):
+            complex_cost += 20
+        cont = f.get("content","")
+        if isinstance(cont, str):
+            total_lines += cont.count("\n")
+    per_lines = 2 * (total_lines // 100)
+    return int(base + per_file + per_lines + complex_cost)
+
+# ---- core background job ----
+async def do_generate_job(job_id: str, payload: Dict[str, Any]):
+    await ws.send(job_id, {"job_id": job_id, "status": "initializing", "message": "job started"})
     try:
-        # Enable Pages on repo root => requires Pages permission
-        payload = {"source": {"branch": "main", "path": "/"}}
-        r = requests.put(f"{GITHUB_API}/repos/{owner}/{repo}/pages", headers=HEADERS, json=payload)
-        if r.status_code in (200, 201, 202):
-            return {"ok": True, "msg": "Pages likely enabled"}
-        logging.warning("Pages enable returned %s: %s", r.status_code, r.text)
-        return {"ok": False, "msg": f"Pages API returned {r.status_code} {r.text}"}
-    except Exception as e:
-        logging.warning("Pages enable exception %s", e)
-        return {"ok": False, "msg": str(e)}
+        email = payload["email"]
+        game_name = payload["game_name"]
+        prompt = payload["prompt"]
+        # 1) user check
+        user = get_user_by_email(email)
+        if not user:
+            await ws.send(job_id, {"status":"failed","message":"user not found"})
+            JOB_STORE[job_id] = {"status":"failed"}
+            return
+        username = user.get("username") or user.get("email").split("@")[0]
+        username_safe = safe_username_from_name(username)
+        folder = slugify(game_name)
+        # 2) build AI prompt with last 12 history
+        last12 = get_last_messages(email, game_name, 12)
+        hist_text = "\n".join([f"{m['role']}: {m['content']}" for m in last12])
+        ai_prompt = f"""
+You are a senior game developer and will produce a JSON manifest for a Babylon.js playable web game.
+User email: {email}
+Game name: {game_name}
+History (last messages): {hist_text}
+User prompt: {prompt}
 
-# Importer core
-def import_preview_to_web(preview_url: str, webdir: Path):
-    if webdir.exists():
-        shutil.rmtree(webdir)
-    webdir.mkdir(parents=True, exist_ok=True)
-    resources = set()
+Return only a single JSON object with fields:
+- project_name (string)
+- files: array of {{ path, type, content }} where path is relative (index.html, js/app.js, css/style.css, assets/car.glb)
+  - type is "text" or "binary_base64" for binary content
+- estimated_credits (integer)
+- notes (string)
+- build_instructions (string)
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(args=['--no-sandbox','--disable-setuid-sandbox'])
-        page = browser.new_page()
-        def on_response(resp):
-            try:
-                req = resp.request
-                if req.method != "GET": return
-                u = resp.url
-                if u.startswith("http://") or u.startswith("https://"):
-                    if u.startswith("data:"): return
-                    resources.add(u)
-            except Exception:
-                pass
-        page.on("response", on_response)
-
-        logging.info("Loading preview URL: %s", preview_url)
-        page.goto(preview_url, wait_until="networkidle", timeout=IMPORT_TIMEOUT_SECONDS*1000)
-        page.wait_for_timeout(1000)  # small settle time
-        html = page.content()
-        (webdir / "index.html").write_text(html, encoding='utf8')
-
-        resource_urls = list(resources)
-        logging.info("Found %d resources", len(resource_urls))
-        # Download resources, small concurrency-ish via slices
-        for i in range(0, len(resource_urls), 8):
-            batch = resource_urls[i:i+8]
-            for u in batch:
-                lp = to_local_path(webdir, u)
-                download_resource(u, lp, timeout=30)
-
-        # rewrite index.html
-        idx_path = webdir / "index.html"
-        updated = idx_path.read_text(encoding='utf8')
-        for u in resource_urls:
-            lp = to_local_path(webdir, u)
-            rel = lp.relative_to(webdir).as_posix()
-            updated = re.sub(re.escape(u), rel, updated)
-        idx_path.write_text(updated, encoding='utf8')
-
-        browser.close()
-
-    # sanitize JS files
-    for js in webdir.rglob("*.js"):
-        sanitize_js_file(js)
-
-    return webdir
-
-# API endpoint
-class ImportBody(BaseModel):
-    previewUrl: str
-    username: str
-    project: str
-    visibility: str = "public"
-
-@app.post("/api/import-and-commit")
-def import_and_commit(b: ImportBody):
-    preview = b.previewUrl
-    username = b.username.strip()
-    project = b.project.strip().replace(" ", "-").lower()
-    visibility = b.visibility
-
-    if not preview or not username or not project:
-        raise HTTPException(status_code=400, detail="missing fields")
-
-    # create temp workspace
-    wid = str(uuid.uuid4())
-    tmpdir = Path(tempfile.gettempdir()) / f"playful_import_{wid}"
-    try:
-        tmpdir.mkdir(parents=True, exist_ok=True)
-        webdir = tmpdir / "web"
-        logging.info("Starting import for %s/%s -> workspace %s", username, project, tmpdir)
-        # 1) Import preview into webdir
-        import_preview_to_web(preview, webdir)
-
-        # basic check: index.html must exist
-        idx = webdir / "index.html"
-        if not idx.exists():
-            raise HTTPException(status_code=500, detail="index.html missing after import")
-
-        # 2) Commit to GitHub
+Ensure JS is safe (no eval/new Function). Keep assets small or refer to placeholders for big models.
+"""
+        await ws.send(job_id, {"status":"thinking", "message":"calling AI..."})
+        manifest = call_gemini(ai_prompt)
+        await ws.send(job_id, {"status":"thinking", "message":"AI returned manifest; validating..."})
+        files = manifest.get("files", [])
+        # 3) estimate & credit check
+        est = manifest.get("estimated_credits") or estimate_credits(files)
+        credits = int(user.get("credits", 0))
+        if credits < est:
+            await ws.send(job_id, {"status":"failed", "message": f"Insufficient credits: need {est}, have {credits}"})
+            JOB_STORE[job_id] = {"status":"failed", "reason":"insufficient_credits", "estimated": est}
+            return
+        # deduct credits (simple update - in production do transaction)
+        supabase.table("users").update({"credits": credits - est}).eq("email", email).execute()
+        await ws.send(job_id, {"status":"committing", "message":"sanitizing files and committing to GitHub..."})
+        safe_files = sanitize_manifest_files(files)
+        # 4) commit to GitHub (repo name = username_safe, path folder)
         owner = GITHUB_OWNER
-        repo = username
-        commit_res = bulk_commit(owner=owner, repo=repo, branch="main", project_folder=project, local_folder=webdir, message=f"Import {project} from {preview}")
-        # 3) Attempt to enable Pages (best-effort)
-        pages_res = attempt_enable_pages(owner, repo)
-        preview_url = f"https://{owner}.github.io/{repo}/{project}/"
-
-        return {"ok": True, "commit": commit_res, "pages": pages_res, "preview_url": preview_url}
-    except HTTPException as e:
-        raise e
+        repo = username_safe
+        commit_res = commit_files(owner, repo, "main", folder, safe_files, commit_message=f"Playful AI generate {folder}")
+        # attempt to enable pages (best-effort)
+        pages_res = enable_pages(owner, repo)
+        preview_url = f"https://{owner}.github.io/{repo}/{folder}/index.html"
+        # 5) append assistant chat history entry summarizing the action
+        append_chat_history = get_last_messages(email, game_name, 0)  # no-op to get user row ensure
+        # Append assistant record
+        append_chat = {
+            "role": "assistant",
+            "content": f"Generated files and committed to GitHub. Preview: {preview_url}. Notes: {manifest.get('notes','')}",
+            "ts": int(time.time())
+        }
+        # update chat_history JSON for user
+        user = get_user_by_email(email)
+        history = user.get("chat_history") or {}
+        arr = history.get(game_name, [])
+        arr.append(append_chat)
+        arr = arr[-40:]
+        history[game_name] = arr
+        supabase.table("users").update({"chat_history": history}).eq("email", email).execute()
+        await ws.send(job_id, {"status":"done", "message":"commit complete", "preview_url": preview_url, "commit": commit_res, "pages": pages_res})
+        JOB_STORE[job_id] = {"status":"done", "preview_url": preview_url}
     except Exception as e:
-        logging.exception("Import failure")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # cleanup workspace
-        try:
-            if tmpdir.exists():
-                shutil.rmtree(tmpdir)
-                logging.info("Cleaned up workspace %s", tmpdir)
-        except Exception as e:
-            logging.warning("Failed cleanup %s -> %s", tmpdir, e)
+        await ws.send(job_id, {"status":"failed", "message": str(e)})
+        JOB_STORE[job_id] = {"status":"failed", "error": str(e)}
+
+# ---- endpoints ----
+@app.post("/history/append")
+async def http_append(req: AppendRequest):
+    return append_chat_history(req.email, req.game_name, req.role, req.content)
+
+@app.post("/generate-and-commit")
+async def http_generate(req: GenerateRequest, background: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    JOB_STORE[job_id] = {"status":"queued"}
+    payload = {"email": req.email, "game_name": req.game_name, "prompt": req.prompt}
+    background.add_task(asyncio.create_task, do_generate_job(job_id, payload))
+    return {"ok": True, "job_id": job_id, "ws_url": f"/ws/{job_id}"}
+
+@app.websocket("/ws/{job_id}")
+async def websocket_endpoint(websocket: WebSocket, job_id: str):
+    await ws.connect(job_id, websocket)
+    try:
+        while True:
+            # optional: keep alive heartbeat from client
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await ws.disconnect(job_id, websocket)
+
+@app.post("/build-apk")
+async def http_build_apk(req: BuildRequest):
+    """
+    Triggers a GitHub Actions workflow_dispatch on the repo (username) with input 'folder' = game folder
+    The workflow (in the repo) should build Capacitor/Android release and create a Release with artifact.
+    """
+    email = req.email
+    user = get_user_by_email(email)
+    if not user:
+        raise HTTPException(status_code=404, detail="user not found")
+    username_safe = safe_username_from_name(user.get("username") or user.get("email").split("@")[0])
+    folder = slugify(req.game_name)
+    owner = GITHUB_OWNER
+    repo = username_safe
+    # trigger workflow_dispatch
+    # The workflow file name we expect: build_apk.yml
+    dispatch_url = f"{GITHUB_API}/repos/{owner}/{repo}/actions/workflows/build_apk.yml/dispatches"
+    payload = {"ref": "main", "inputs": {"folder": folder, "admob_banner": req.admob_ids.get("banner","") if req.admob_ids else "", "admob_interstitial": req.admob_ids.get("interstitial","") if req.admob_ids else ""}}
+    r = requests.post(dispatch_url, headers=GH_HEADERS, json=payload)
+    if r.status_code not in (204,201):
+        raise HTTPException(status_code=500, detail=f"Failed trigger workflow: {r.status_code} {r.text}")
+    # store job and inform user they can open websocket to track (we will poll via GitHub API in a separate worker in production)
+    job_id = str(uuid.uuid4())
+    JOB_STORE[job_id] = {"status":"queued", "message":"workflow dispatched"}
+    return {"ok": True, "job_id": job_id, "message":"Workflow dispatched, check repo Actions for progress"}
+
+@app.get("/status/{job_id}")
+async def status(job_id: str):
+    return JOB_STORE.get(job_id, {"status":"unknown"})
+
+@app.get("/health")
+async def health():
+    return {"ok": True, "time": int(time.time())}
