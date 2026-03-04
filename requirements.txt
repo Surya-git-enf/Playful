@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-playwright
 requests
-python-dotenv
+supabase
 pydantic
+python-dotenv
