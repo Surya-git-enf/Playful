@@ -1,0 +1,80 @@
+# .github/workflows/build_apk.yml
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      folder:
+        description: 'Relative folder containing web game (e.g., mount_climb)'
+        required: true
+      admob_banner:
+        description: 'Banner AdMob ID (optional)'
+        required: false
+      admob_interstitial:
+        description: 'Interstitial AdMob ID (optional)'
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install deps
+        run: |
+          npm ci || npm install
+
+      - name: Install Capacitor CLI
+        run: npm install -g @capacitor/cli
+
+      - name: Prepare web assets
+        run: |
+          FOLDER="${{ github.event.inputs.folder }}"
+          echo "Using folder: $FOLDER"
+          # assume capacitor project exists and web assets should be copied into 'www'
+          rm -rf app/www || true
+          mkdir -p app/www
+          cp -r "./${FOLDER}/." app/www/ || true
+
+      - name: Inject AdMob IDs and watermark
+        run: |
+          BANNER="${{ github.event.inputs.admob_banner }}"
+          INTER="${{ github.event.inputs.admob_interstitial }}"
+          if [ -n "$BANNER" ]; then
+            find app/www -type f -name '*.html' -exec sed -i "s|__ADMOB_BANNER__|${BANNER}|g" {} \;
+          else
+            find app/www -type f -name '*.html' -exec sed -i "s|__ADMOB_BANNER__|${{ secrets.PLAYFUL_ADMOB_BANNER_ID }}|g" {} \;
+          fi
+          if [ -n "$INTER" ]; then
+            find app/www -type f -name '*.html' -exec sed -i "s|__ADMOB_INTERSTITIAL__|${INTER}|g" {} \;
+          else
+            find app/www -type f -name '*.html' -exec sed -i "s|__ADMOB_INTERSTITIAL__|${{ secrets.PLAYFUL_ADMOB_INTERSTITIAL_ID }}|g" {} \;
+          fi
+          # inject watermark for demo/free builds if not present
+          find app/www -type f -name '*.html' -exec sed -i "s|</body>|<div id=\"playful-watermark\" style=\"position:fixed;left:10px;bottom:10px;background:rgba(0,0,0,0.6);color:#fff;padding:6px 10px;z-index:9999\">Built with Playful</div></body>|g" {} \;
+
+      - name: Setup JDK (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Build Android release
+        run: |
+          cd android || true
+          ./gradlew assembleRelease --no-daemon || ( echo "Gradle build failed"; exit 1 )
+
+      - name: Create release and upload artifact
+        uses: softprops/action-gh-release@v1
+        with:
+          files: android/app/build/outputs/apk/release/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
