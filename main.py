@@ -1,18 +1,31 @@
 # main.py
-"""
-Playful backend - Single-file service
-- Supabase users table stores chat_history as JSON: { "<game_name>": [ {role,content,ts}, ... ] }
-- POST /generate-and-commit -> background job (WebSocket stream) -> AI manifest -> commit to GitHub -> enable Pages -> return preview_url
-- POST /build-apk -> triggers GitHub Actions workflow_dispatch on the relevant repo (repo = username under GITHUB_OWNER) with folder input
-- WebSocket at /ws/{job_id} streams status updates for frontend
-
-Environment variables (see ENV.md):
-- SUPABASE_URL, SUPABASE_KEY (service role)
-- PLAYFUL_GH_TOKEN (GitHub PAT)
-- GITHUB_OWNER (org/owner where repos will be created)
-- GEMINI_API_ENDPOINT, GEMINI_API_KEY
-- OPTIONAL: PLAYFUL_ADMOB_BANNER_ID, PLAYFUL_ADMOB_INTERSTITIAL_ID
-"""
+#
+# Playful backend (single file)
+# - POST /generate-and-commit  -> generate files (AI or simulate) and commit to org repo: Surya-git-enf/{username}/{game_folder}
+# - POST /build-apk            -> dispatch build job to Playful repo workflow (Playful/build_apk.yml). This builder workflow will clone the user's repo and build the APK.
+# - POST /history/append      -> append user/assistant chat entries into supabase users.chat_history (json)
+# - GET  /status/{job_id}     -> get job state
+# - GET  /health              -> health + build mode
+# - WS   /ws/{job_id}         -> subscribe to job updates
+#
+# Environment variables required:
+# SUPABASE_URL, SUPABASE_KEY (service_role)
+# PLAYFUL_GH_TOKEN  (GitHub PAT with repo + workflow + org permissions)
+# GITHUB_OWNER      (organization name: e.g., Surya-git-enf)
+# PLAYFUL_BUILDER_REPO (the repo that contains the builder workflow, e.g., "Playful")
+# GEMINI_API_ENDPOINT (optional)
+# GEMINI_API_KEY      (optional)
+# BUILD_MODE = simulate | real
+# PLAYFUL_ADMOB_BANNER_ID, PLAYFUL_ADMOB_INTERSTITIAL_ID (optional defaults)
+#
+# Notes:
+# - To create repos under an org you must use a token that has permission to create repos in that org.
+# - This implementation will attempt to create a repo under GITHUB_OWNER with the username as repo name.
+# - The Playful builder workflow should accept inputs: owner (user org/owner), repo (username repo), folder (game folder), admob ids.
+#
+# Install requirements: see separate requirements.txt (fastapi, uvicorn, requests, supabase)
+# Run: uvicorn main:app --reload
+#
 
 import os
 import re
@@ -21,37 +34,251 @@ import time
 import uuid
 import base64
 import asyncio
+import logging
 from typing import Any, Dict, List, Optional
+
 import requests
-from fastapi import FastAPI, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from supabase import create_client
 
-# ---- CONFIG from env ----
+# -------------------------
+# Basic logging
+# -------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("playful-backend")
+
+# -------------------------
+# Config from env
+# -------------------------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 PLAYFUL_GH_TOKEN = os.getenv("PLAYFUL_GH_TOKEN")
-GITHUB_OWNER = os.getenv("GITHUB_OWNER", "playful-git-enf")
+GITHUB_OWNER = os.getenv("GITHUB_OWNER", "Surya-git-enf")
+PLAYFUL_BUILDER_REPO = os.getenv("PLAYFUL_BUILDER_REPO", "Playful")  # where build_apk.yml lives
 GEMINI_API_ENDPOINT = os.getenv("GEMINI_API_ENDPOINT")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+BUILD_MODE = os.getenv("BUILD_MODE", "simulate")  # simulate | real
 PLAYFUL_ADMOB_BANNER_ID = os.getenv("PLAYFUL_ADMOB_BANNER_ID", "")
 PLAYFUL_ADMOB_INTERSTITIAL_ID = os.getenv("PLAYFUL_ADMOB_INTERSTITIAL_ID", "")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("Set SUPABASE_URL and SUPABASE_KEY")
-if not PLAYFUL_GH_TOKEN:
-    raise RuntimeError("Set PLAYFUL_GH_TOKEN")
-if not GEMINI_API_ENDPOINT or not GEMINI_API_KEY:
-    # we will allow simulation of AI for testing, but warn
-    print("Warning: GEMINI_API_ENDPOINT or GEMINI_API_KEY not set — call_gemini will fail until set.")
+    raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set")
 
-# ---- Init supabase ----
+if not PLAYFUL_GH_TOKEN:
+    raise RuntimeError("PLAYFUL_GH_TOKEN must be set (GitHub PAT)")
+
+# -------------------------
+# Initialize Supabase
+# -------------------------
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-app = FastAPI(title="Playful Backend")
+# -------------------------
+# GitHub API helpers
+# -------------------------
+GITHUB_API = "https://api.github.com"
+GH_HEADERS = {
+    "Authorization": f"token {PLAYFUL_GH_TOKEN}",
+    "Accept": "application/vnd.github+json"
+}
 
-# ---- simple in-memory websocket manager & job store (POC) ----
+def safe_username_from_email(email: str) -> str:
+    part = email.split("@", 1)[0]
+    s = re.sub(r'[^a-z0-9\-]', '-', part.strip().lower())
+    s = re.sub(r'-{2,}', '-', s).strip('-')
+    if not s:
+        s = "user-" + uuid.uuid4().hex[:8]
+    return s
+
+def slugify(s: str) -> str:
+    s2 = s.strip().lower()
+    s2 = re.sub(r'[^a-z0-9\-]+', '-', s2)
+    s2 = re.sub(r'-{2,}', '-', s2).strip('-')
+    if not s2:
+        s2 = uuid.uuid4().hex[:6]
+    return s2
+
+def org_repo_exists(owner: str, repo: str) -> bool:
+    r = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}", headers=GH_HEADERS, timeout=20)
+    return r.status_code == 200
+
+def create_org_repo(owner: str, repo: str, private: bool = False) -> Dict[str, Any]:
+    """
+    Attempt to create a repo under the organization 'owner' with name repo.
+    Requires token to have organization repo create permission.
+    """
+    logger.info(f"Creating org repo {owner}/{repo} (private={private})")
+    payload = {"name": repo, "private": private, "auto_init": False}
+    r = requests.post(f"{GITHUB_API}/orgs/{owner}/repos", headers=GH_HEADERS, json=payload, timeout=30)
+    if r.status_code in (201, 202):
+        return r.json()
+    # return full response for debug
+    raise RuntimeError(f"Failed to create repo {owner}/{repo}: {r.status_code} {r.text}")
+
+def create_repo_readme_if_missing(owner: str, repo: str, branch: str = "main"):
+    # create README.md if no branch exists (init minimal tree)
+    sha = get_branch_sha(owner, repo, branch)
+    if sha:
+        return
+    content = base64.b64encode(f"# {repo}\n\nGenerated by Playful".encode()).decode()
+    payload = {"message":"init repo", "content": content, "branch": branch}
+    r = requests.put(f"{GITHUB_API}/repos/{owner}/{repo}/contents/README.md", headers=GH_HEADERS, json=payload, timeout=20)
+    if r.status_code not in (200,201):
+        logger.warning(f"Failed to create README for {owner}/{repo}: {r.status_code} {r.text}")
+    return
+
+def get_branch_sha(owner: str, repo: str, branch: str = "main") -> Optional[str]:
+    r = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}", headers=GH_HEADERS, timeout=20)
+    if r.status_code == 200:
+        return r.json()["object"]["sha"]
+    return None
+
+def commit_files_to_repo(owner: str, repo: str, branch: str, folder: str, files: List[Dict[str, Any]], commit_message: str):
+    """
+    Commit files into repo under folder path.
+    files: [{"path":"index.html","type":"text","content":"..."}] or binary_base64
+    """
+    logger.info(f"Committing {len(files)} files to {owner}/{repo}/{folder}")
+    # Ensure repo exists (owner/repo)
+    if not org_repo_exists(owner, repo):
+        raise RuntimeError(f"Repo {owner}/{repo} not found")
+
+    # Ensure branch exists (create README if no main)
+    create_repo_readme_if_missing(owner, repo, branch)
+
+    ref_sha = get_branch_sha(owner, repo, branch)
+    if not ref_sha:
+        raise RuntimeError("Could not find branch SHA for commit base")
+
+    # get commit info for base_tree
+    commit_resp = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/git/commits/{ref_sha}", headers=GH_HEADERS, timeout=20)
+    if commit_resp.status_code >= 400:
+        raise RuntimeError(f"Failed to fetch commit for base sha: {commit_resp.status_code} {commit_resp.text}")
+    base_tree_sha = commit_resp.json().get("tree", {}).get("sha")
+
+    # create blobs for each file
+    tree_items = []
+    for f in files:
+        path_local = f.get("path")
+        if not path_local:
+            continue
+        path_in_repo = f"{folder}/{path_local}".lstrip("/")
+        ftype = f.get("type", "text")
+        content = f.get("content", "")
+        if ftype == "binary_base64":
+            blob_payload = {"content": content, "encoding": "base64"}
+        else:
+            # create blob via API (send plain content base64)
+            blob_payload = {"content": base64.b64encode(content.encode()).decode(), "encoding": "base64"}
+        br = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/blobs", headers=GH_HEADERS, json=blob_payload, timeout=30)
+        if br.status_code >= 400:
+            raise RuntimeError(f"Failed to create blob for {path_in_repo}: {br.status_code} {br.text}")
+        blob_sha = br.json()["sha"]
+        tree_items.append({"path": path_in_repo, "mode": "100644", "type": "blob", "sha": blob_sha})
+
+    tree_payload = {"base_tree": base_tree_sha, "tree": tree_items}
+    tr = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/trees", headers=GH_HEADERS, json=tree_payload, timeout=30)
+    if tr.status_code >= 400:
+        raise RuntimeError(f"Failed to create tree: {tr.status_code} {tr.text}")
+    new_tree_sha = tr.json()["sha"]
+
+    commit_payload = {"message": commit_message, "tree": new_tree_sha, "parents": [ref_sha]}
+    cr = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/commits", headers=GH_HEADERS, json=commit_payload, timeout=30)
+    if cr.status_code >= 400:
+        raise RuntimeError(f"Failed to create commit: {cr.status_code} {cr.text}")
+    new_commit_sha = cr.json()["sha"]
+
+    up = requests.patch(f"{GITHUB_API}/repos/{owner}/{repo}/git/refs/heads/{branch}", headers=GH_HEADERS, json={"sha": new_commit_sha}, timeout=20)
+    if up.status_code >= 400:
+        raise RuntimeError(f"Failed to update ref: {up.status_code} {up.text}")
+    return {"commit_sha": new_commit_sha}
+
+def enable_pages(owner: str, repo: str):
+    # best-effort enable GitHub Pages for main branch root
+    r = requests.put(f"{GITHUB_API}/repos/{owner}/{repo}/pages", headers=GH_HEADERS, json={"source":{"branch":"main","path":"/"}}, timeout=20)
+    return {"status": r.status_code, "text": r.text}
+
+# -------------------------
+# AI wrapper (simulate or real)
+# -------------------------
+def simulate_gemini(prompt: str) -> Dict[str, Any]:
+    """
+    Return a small sample manifest for testing (no real AI).
+    """
+    return {
+        "project_name": "mount_climb_demo",
+        "files": [
+            {"path":"index.html","type":"text","content":"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head><body><h1>Mount Climb Demo</h1><p>Preview available.</p><script src='js/app.js'></script></body></html>"},
+            {"path":"js/app.js","type":"text","content":"console.log('Mount Climb demo');"},
+            {"path":"css/style.css","type":"text","content":"body{font-family:Arial;background:#121212;color:#fff}"},
+        ],
+        "estimated_credits": 1,
+        "notes": "Simulated manifest for debugging",
+        "build_instructions": "none"
+    }
+
+def call_gemini(prompt: str) -> Dict[str, Any]:
+    """
+    If BUILD_MODE == 'simulate', uses simulate_gemini.
+    Otherwise calls real Gemini (you must adapt request shape to provider).
+    """
+    if BUILD_MODE == "simulate":
+        return simulate_gemini(prompt)
+    if not GEMINI_API_ENDPOINT or not GEMINI_API_KEY:
+        raise RuntimeError("Gemini endpoint/key not configured")
+    headers = {"Authorization": f"Bearer {GEMINI_API_KEY}", "Content-Type": "application/json"}
+    payload = {"prompt": prompt, "max_tokens": 4000, "temperature": 0.2}
+    r = requests.post(GEMINI_API_ENDPOINT, headers=headers, json=payload, timeout=120)
+    if r.status_code >= 400:
+        raise RuntimeError(f"AI call failed: {r.status_code} {r.text}")
+    data = r.json()
+    # provider-specific parsing required — expect JSON manifest inside response text
+    txt = None
+    if isinstance(data, dict):
+        # attempt to find first text
+        if "candidates" in data and isinstance(data["candidates"], list):
+            txt = data["candidates"][0].get("content") or data["candidates"][0].get("text")
+        elif "output" in data:
+            txt = data["output"]
+        else:
+            txt = json.dumps(data)
+    else:
+        txt = str(data)
+    first = txt.find("{")
+    last = txt.rfind("}")
+    if first == -1 or last == -1:
+        raise RuntimeError("AI did not return valid JSON manifest")
+    manifest = json.loads(txt[first:last+1])
+    return manifest
+
+# -------------------------
+# Simple sanitize for manifest files
+# -------------------------
+def sanitize_files(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    allowed = []
+    for f in files:
+        path = f.get("path", "")
+        ftype = f.get("type", "text")
+        content = f.get("content", "")
+        if ftype == "text":
+            # strip eval/new Function for safety
+            content = re.sub(r'\beval\s*\(', '/*eval removed*/(', content)
+            content = re.sub(r'new\s+Function\s*\(', '/*new Function removed*/(', content)
+            allowed.append({"path": path, "type":"text", "content": content})
+        elif ftype == "binary_base64":
+            # simple size cap (50MB)
+            size_bytes = (len(content) * 3) // 4
+            if size_bytes > 50 * 1024 * 1024:
+                raise RuntimeError(f"Binary file {path} too large")
+            allowed.append({"path": path, "type":"binary_base64", "content": content})
+        else:
+            raise RuntimeError("Unknown file type in manifest")
+    return allowed
+
+# -------------------------
+# Websocket manager + job store
+# -------------------------
 class WSManager:
     def __init__(self):
         self.clients: Dict[str, List[WebSocket]] = {}
@@ -69,53 +296,47 @@ class WSManager:
 
     async def send(self, job_id: str, payload: Dict[str, Any]):
         async with self.lock:
-            sockets = list(self.clients.get(job_id, []))
-        for ws in sockets:
+            clients = list(self.clients.get(job_id, []))
+        for c in clients:
             try:
-                await ws.send_json(payload)
+                await c.send_json(payload)
             except Exception:
-                await self.disconnect(job_id, ws)
+                await self.disconnect(job_id, c)
 
 ws = WSManager()
 JOB_STORE: Dict[str, Dict[str, Any]] = {}
 
-# ---- utilities ----
-def slugify(s: str) -> str:
-    s = s.strip().lower()
-    s = re.sub(r'[\s]+', '-', s)
-    s = re.sub(r'[^a-z0-9\-]', '', s)
-    s = re.sub(r'-{2,}', '-', s)
-    return s.strip('-')
+# -------------------------
+# FastAPI app & models
+# -------------------------
+app = FastAPI()
 
-def safe_username_from_name(name: str) -> str:
-    # remove spaces, lowercase, replace spaces with '-' per your instruction
-    return re.sub(r'[^a-z0-9\-]', '-', name.strip().lower())
-
-# ---- models ----
 class GenerateRequest(BaseModel):
     email: str
     game_name: str
     prompt: str
 
-class AppendRequest(BaseModel):
+class BuildRequest(BaseModel):
     email: str
+    game_name: str
+    admob_ids: Optional[Dict[str,str]] = None
+
+class AppendReq(BaseModel):
+    user_email: str
     game_name: str
     role: str
     content: str
 
-class BuildRequest(BaseModel):
-    email: str
-    game_name: str
-    admob_ids: Optional[Dict[str,str]] = None  # optional: banner/interstitial
-
-# ---- Supabase helpers (users table holds chat_history JSON) ----
-def get_user_by_email(email: str) -> Optional[Dict]:
+# -------------------------
+# Supabase helpers
+# -------------------------
+def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     r = supabase.table("users").select("*").eq("email", email).maybe_single().execute()
     if r.error:
         raise RuntimeError(f"Supabase error: {r.error.message}")
     return r.data
 
-def upsert_user(user_row: Dict):
+def upsert_user_row(user_row: Dict[str, Any]):
     r = supabase.table("users").upsert(user_row).execute()
     if r.error:
         raise RuntimeError(f"Supabase upsert error: {r.error.message}")
@@ -126,7 +347,6 @@ def append_chat_history(email: str, game_name: str, role: str, content: str):
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
     history = user.get("chat_history") or {}
-    # ensure last 40 messages per game only
     arr = history.get(game_name, [])
     arr.append({"role": role, "content": content, "ts": int(time.time())})
     arr = arr[-40:]
@@ -144,249 +364,78 @@ def get_last_messages(email: str, game_name: str, last_n: int = 12):
     arr = history.get(game_name, [])
     return arr[-last_n:]
 
-# ---- GitHub helpers (commit files into path username/game_folder/) ----
-GITHUB_API = "https://api.github.com"
-GH_HEADERS = {"Authorization": f"token {PLAYFUL_GH_TOKEN}", "Accept": "application/vnd.github+json"}
-
-def ensure_repo_for_username(username: str):
+# -------------------------
+# Core background jobs
+# -------------------------
+async def do_generate_and_commit(job_id: str, payload: Dict[str, Any]):
     """
-    Create a repo under GITHUB_OWNER with name = username (if not exists).
-    This matches preview URL pattern: https://{GITHUB_OWNER}.github.io/{username}/{game_folder}/index.html
+    Steps:
+    - gather user
+    - build ai prompt (last 12 messages)
+    - call ai (or simulate)
+    - sanitize files
+    - ensure repo (org/{username}) exists
+    - commit files into folder = slug(game_name)
+    - enable pages (best effort)
+    - update supabase chat_history with assistant note
     """
-    repo = username
-    url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{repo}"
-    r = requests.get(url, headers=GH_HEADERS)
-    if r.status_code == 200:
-        return True
-    # create repo in org
-    payload = {"name": repo, "private": False, "auto_init": False}
-    cr = requests.post(f"{GITHUB_API}/orgs/{GITHUB_OWNER}/repos", headers=GH_HEADERS, json=payload)
-    if cr.status_code in (201,202):
-        return True
-    # fallback to creating user repo — usually not allowed with org token; raise error
-    raise RuntimeError(f"Failed to ensure repo for username '{username}': {cr.status_code} {cr.text}")
-
-def get_branch_sha(owner: str, repo: str, branch: str = "main") -> Optional[str]:
-    r = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}", headers=GH_HEADERS)
-    if r.status_code == 200:
-        return r.json()["object"]["sha"]
-    return None
-
-def create_readme_if_missing(owner: str, repo: str, branch: str = "main"):
-    if get_branch_sha(owner, repo, branch):
-        return
-    content = base64.b64encode(f"# {repo}\n\nGenerated by Playful".encode()).decode()
-    payload = {"message":"init repo", "content": content, "branch": branch}
-    r = requests.put(f"{GITHUB_API}/repos/{owner}/{repo}/contents/README.md", headers=GH_HEADERS, json=payload)
-    if r.status_code not in (201,200):
-        raise RuntimeError(f"Failed to init repo: {r.status_code} {r.text}")
-
-def commit_files(owner: str, repo: str, branch: str, folder: str, files: List[Dict[str,Any]], commit_message: str = "Playful AI commit"):
-    """
-    files: list of {"path":"index.html", "type":"text" or "binary_base64", "content": "<...>"}
-    We'll create blobs, tree entries with paths = f"{folder}/{path}" and commit.
-    """
-    ensure_repo_for_username(repo)
-    create_readme_if_missing(owner, repo, branch)
-    ref_sha = get_branch_sha(owner, repo, branch)
-    if not ref_sha:
-        raise RuntimeError("Missing branch ref (main)")
-
-    commit_resp = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/git/commits/{ref_sha}", headers=GH_HEADERS)
-    if commit_resp.status_code >= 400:
-        raise RuntimeError(f"Failed to fetch base commit: {commit_resp.status_code} {commit_resp.text}")
-    base_tree_sha = commit_resp.json()["tree"]["sha"]
-
-    tree_items = []
-    for f in files:
-        p = f.get("path")
-        if not p:
-            continue
-        path_in_repo = f"{folder}/{p}".lstrip("/")
-        ftype = f.get("type","text")
-        cnt = f.get("content","")
-        if ftype == "binary_base64":
-            blob_payload = {"content": cnt, "encoding":"base64"}
-        else:
-            b64 = base64.b64encode(cnt.encode()).decode()
-            blob_payload = {"content": b64, "encoding":"base64"}
-        br = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/blobs", headers=GH_HEADERS, json=blob_payload)
-        if br.status_code >= 400:
-            raise RuntimeError(f"Failed to create blob for {path_in_repo}: {br.status_code} {br.text}")
-        blob_sha = br.json()["sha"]
-        tree_items.append({"path": path_in_repo, "mode":"100644", "type":"blob", "sha": blob_sha})
-
-    tree_payload = {"base_tree": base_tree_sha, "tree": tree_items}
-    tr = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/trees", headers=GH_HEADERS, json=tree_payload)
-    if tr.status_code >= 400:
-        raise RuntimeError(f"Failed to create tree: {tr.status_code} {tr.text}")
-    new_tree_sha = tr.json()["sha"]
-
-    commit_payload = {"message": commit_message, "tree": new_tree_sha, "parents":[ref_sha]}
-    cr = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/commits", headers=GH_HEADERS, json=commit_payload)
-    if cr.status_code >= 400:
-        raise RuntimeError(f"Failed to create commit: {cr.status_code} {cr.text}")
-    new_commit_sha = cr.json()["sha"]
-
-    up = requests.patch(f"{GITHUB_API}/repos/{owner}/{repo}/git/refs/heads/{branch}", headers=GH_HEADERS, json={"sha": new_commit_sha})
-    if up.status_code >= 400:
-        raise RuntimeError(f"Failed to update ref: {up.status_code} {up.text}")
-
-    return {"commit_sha": new_commit_sha}
-
-def enable_pages(owner: str, repo: str):
-    r = requests.put(f"{GITHUB_API}/repos/{owner}/{repo}/pages", headers=GH_HEADERS, json={"source":{"branch":"main","path":"/"}})
-    return {"status": r.status_code, "text": r.text}
-
-# ---- AI wrapper (Gemini generic) ----
-def call_gemini(prompt: str) -> Dict[str, Any]:
-    """
-    Call your GEMINI_API_ENDPOINT with GEMINI_API_KEY.
-    Expect returned text containing a JSON manifest as described in prompt.
-    If the provider returns a JSON body with the content already parsed, adapt accordingly.
-    """
-    if not GEMINI_API_ENDPOINT or not GEMINI_API_KEY:
-        raise RuntimeError("Gemini endpoint/key not configured")
-    payload = {
-        "prompt": prompt,
-        "max_tokens": 6000,
-        "temperature": 0.2,
-    }
-    headers = {"Authorization": f"Bearer {GEMINI_API_KEY}", "Content-Type": "application/json"}
-    r = requests.post(GEMINI_API_ENDPOINT, headers=headers, json=payload, timeout=120)
-    if r.status_code >= 400:
-        raise RuntimeError(f"AI call failed: {r.status_code} {r.text}")
-    data = r.json()
-    # Try to extract text/json from response — provider-dependent.
-    # Many providers return data['output'] or data['candidates'][0]['content'] — adapt if needed.
-    text = None
-    if isinstance(data, dict):
-        if "output" in data and isinstance(data["output"], str):
-            text = data["output"]
-        elif "candidates" in data and isinstance(data["candidates"], list):
-            text = data["candidates"][0].get("content") or data["candidates"][0].get("text")
-        elif "content" in data:
-            # could be direct
-            text = data["content"]
-        else:
-            # fallback: stringify
-            text = json.dumps(data)
-    else:
-        text = str(data)
-    # extract JSON manifest from text
-    first = text.find("{")
-    last = text.rfind("}")
-    if first == -1 or last == -1 or last <= first:
-        raise RuntimeError("AI did not return valid JSON manifest")
-    js = text[first:last+1]
-    manifest = json.loads(js)
-    return manifest
-
-# ---- sanitizer simplistic ----
-def sanitize_manifest_files(files: List[Dict[str, Any]]):
-    safe = []
-    for f in files:
-        p = f.get("path","")
-        typ = f.get("type","text")
-        content = f.get("content","")
-        if typ == "text":
-            # strip dangerous patterns
-            content = re.sub(r'\beval\s*\(', '//[stripped eval](', content)
-            content = re.sub(r'new\s+Function\s*\(', '//[stripped new Function](', content)
-            safe.append({"path": p, "type":"text", "content": content})
-        elif typ == "binary_base64":
-            # ensure not huge
-            size_bytes = (len(content) * 3)//4
-            if size_bytes > 50*1024*1024:
-                raise RuntimeError(f"Binary file {p} too large")
-            safe.append({"path": p, "type":"binary_base64", "content": content})
-        else:
-            raise RuntimeError("Unknown file type")
-    return safe
-
-# ---- credit estimator (100 lines = 2 credits; base 5; 0.5/file; glb extra) ----
-def estimate_credits(files: List[Dict[str, Any]]) -> int:
-    base = 5
-    per_file = 0.5 * len(files)
-    total_lines = 0
-    complex_cost = 0
-    for f in files:
-        p = f.get("path","").lower()
-        if p.endswith((".glb",".gltf",".zip")):
-            complex_cost += 20
-        cont = f.get("content","")
-        if isinstance(cont, str):
-            total_lines += cont.count("\n")
-    per_lines = 2 * (total_lines // 100)
-    return int(base + per_file + per_lines + complex_cost)
-
-# ---- core background job ----
-async def do_generate_job(job_id: str, payload: Dict[str, Any]):
-    await ws.send(job_id, {"job_id": job_id, "status": "initializing", "message": "job started"})
+    await ws.send(job_id, {"status":"initializing", "message":"job started"})
+    JOB_STORE[job_id] = {"status":"running"}
     try:
         email = payload["email"]
         game_name = payload["game_name"]
         prompt = payload["prompt"]
-        # 1) user check
         user = get_user_by_email(email)
         if not user:
-            await ws.send(job_id, {"status":"failed","message":"user not found"})
-            JOB_STORE[job_id] = {"status":"failed"}
+            await ws.send(job_id, {"status":"failed", "message":"user not found"})
+            JOB_STORE[job_id] = {"status":"failed", "reason":"no_user"}
             return
-        username = user.get("username") or user.get("email").split("@")[0]
-        username_safe = safe_username_from_name(username)
+        username = user.get("username") or safe_username_from_email(email)
+        username_safe = slugify(username)
         folder = slugify(game_name)
-        # 2) build AI prompt with last 12 history
         last12 = get_last_messages(email, game_name, 12)
         hist_text = "\n".join([f"{m['role']}: {m['content']}" for m in last12])
-        ai_prompt = f"""
-You are a senior game developer and will produce a JSON manifest for a Babylon.js playable web game.
-User email: {email}
-Game name: {game_name}
-History (last messages): {hist_text}
-User prompt: {prompt}
-
-Return only a single JSON object with fields:
-- project_name (string)
-- files: array of {{ path, type, content }} where path is relative (index.html, js/app.js, css/style.css, assets/car.glb)
-  - type is "text" or "binary_base64" for binary content
-- estimated_credits (integer)
-- notes (string)
-- build_instructions (string)
-
-Ensure JS is safe (no eval/new Function). Keep assets small or refer to placeholders for big models.
-"""
-        await ws.send(job_id, {"status":"thinking", "message":"calling AI..."})
+        ai_prompt = f"User email:{email}\nGame:{game_name}\nHistory:\n{hist_text}\nUser prompt:\n{prompt}\nReturn JSON manifest with fields: project_name, files (path,type,content[,binary_base64]), estimated_credits, notes."
+        await ws.send(job_id, {"status":"thinking", "message":"calling AI"})
         manifest = call_gemini(ai_prompt)
-        await ws.send(job_id, {"status":"thinking", "message":"AI returned manifest; validating..."})
+        await ws.send(job_id, {"status":"thinking", "message":"AI returned manifest"})
         files = manifest.get("files", [])
-        # 3) estimate & credit check
-        est = manifest.get("estimated_credits") or estimate_credits(files)
-        credits = int(user.get("credits", 0))
-        if credits < est:
-            await ws.send(job_id, {"status":"failed", "message": f"Insufficient credits: need {est}, have {credits}"})
-            JOB_STORE[job_id] = {"status":"failed", "reason":"insufficient_credits", "estimated": est}
-            return
-        # deduct credits (simple update - in production do transaction)
-        supabase.table("users").update({"credits": credits - est}).eq("email", email).execute()
-        await ws.send(job_id, {"status":"committing", "message":"sanitizing files and committing to GitHub..."})
-        safe_files = sanitize_manifest_files(files)
-        # 4) commit to GitHub (repo name = username_safe, path folder)
+        if not isinstance(files, list) or len(files) == 0:
+            raise RuntimeError("AI manifest has no files")
+        files_safe = sanitize_files(files)
+        # ensure organization repo exists: owner = GITHUB_OWNER, repo = username_safe
         owner = GITHUB_OWNER
         repo = username_safe
-        commit_res = commit_files(owner, repo, "main", folder, safe_files, commit_message=f"Playful AI generate {folder}")
-        # attempt to enable pages (best-effort)
+        try:
+            if not org_repo_exists(owner, repo):
+                await ws.send(job_id, {"status":"committing", "message":f"creating org repo {owner}/{repo}"})
+                create_org_repo(owner, repo, private=False)
+            else:
+                await ws.send(job_id, {"status":"committing", "message":f"using existing repo {owner}/{repo}"})
+        except Exception as e:
+            # creation failed - provide transparent error
+            logger.exception("Repo create failed")
+            await ws.send(job_id, {"status":"failed", "message": f"failed to create repo {owner}/{repo}: {str(e)}"})
+            JOB_STORE[job_id] = {"status":"failed", "error": str(e)}
+            return
+
+        # commit files to repo under folder
+        commit_message = f"Playful AI: generate {folder} at {int(time.time())}"
+        commit_res = commit_files_to_repo(owner, repo, "main", folder, files_safe, commit_message)
+        await ws.send(job_id, {"status":"committed", "message":"files committed to github", "commit": commit_res})
+
+        # enable pages (best-effort)
         pages_res = enable_pages(owner, repo)
         preview_url = f"https://{owner}.github.io/{repo}/{folder}/index.html"
-        # 5) append assistant chat history entry summarizing the action
-        append_chat_history = get_last_messages(email, game_name, 0)  # no-op to get user row ensure
-        # Append assistant record
+        await ws.send(job_id, {"status":"done", "preview_url": preview_url, "pages": pages_res})
+        JOB_STORE[job_id] = {"status":"done", "preview_url": preview_url}
+        # append assistant note to chat history
         append_chat = {
             "role": "assistant",
-            "content": f"Generated files and committed to GitHub. Preview: {preview_url}. Notes: {manifest.get('notes','')}",
+            "content": f"Committed files to repository. Preview: {preview_url}. Notes: {manifest.get('notes','')}",
             "ts": int(time.time())
         }
-        # update chat_history JSON for user
+        # update supabase
         user = get_user_by_email(email)
         history = user.get("chat_history") or {}
         arr = history.get(game_name, [])
@@ -394,65 +443,164 @@ Ensure JS is safe (no eval/new Function). Keep assets small or refer to placehol
         arr = arr[-40:]
         history[game_name] = arr
         supabase.table("users").update({"chat_history": history}).eq("email", email).execute()
-        await ws.send(job_id, {"status":"done", "message":"commit complete", "preview_url": preview_url, "commit": commit_res, "pages": pages_res})
-        JOB_STORE[job_id] = {"status":"done", "preview_url": preview_url}
     except Exception as e:
+        logger.exception("generate_and_commit failed")
         await ws.send(job_id, {"status":"failed", "message": str(e)})
         JOB_STORE[job_id] = {"status":"failed", "error": str(e)}
 
-# ---- endpoints ----
+async def do_dispatch_build_and_poll(job_id: str, payload: Dict[str, Any]):
+    """
+    Trigger a dispatcher in Playful builder repo to build apk for user repo.
+    The builder workflow should clone the user repo and run Gradle to build.
+    We dispatch to Playful repo and then poll for latest run for that workflow to complete and fetch artifacts.
+    """
+    await ws.send(job_id, {"status":"initializing", "message":"build job queued"})
+    JOB_STORE[job_id] = {"status":"queued"}
+    try:
+        email = payload["email"]
+        game_name = payload["game_name"]
+        admob_ids = payload.get("admob_ids") or {}
+        user = get_user_by_email(email)
+        if not user:
+            await ws.send(job_id, {"status":"failed", "message":"user not found"})
+            JOB_STORE[job_id] = {"status":"failed"}
+            return
+        username = user.get("username") or safe_username_from_email(email)
+        owner = GITHUB_OWNER
+        repo = username
+        folder = slugify(game_name)
+
+        # dispatch the builder workflow in Playful builder repo
+        dispatch_url = f"{GITHUB_API}/repos/{owner}/{PLAYFUL_BUILDER_REPO}/actions/workflows/build_apk.yml/dispatches"
+        payload_dispatch = {
+            "ref": "main",
+            "inputs": {
+                "owner": owner,
+                "repo": repo,
+                "folder": folder,
+                "admob_banner": admob_ids.get("banner", PLAYFUL_ADMOB_BANNER_ID),
+                "admob_interstitial": admob_ids.get("interstitial", PLAYFUL_ADMOB_INTERSTITIAL_ID)
+            }
+        }
+        r = requests.post(dispatch_url, headers=GH_HEADERS, json=payload_dispatch, timeout=20)
+        if r.status_code not in (204, 201):
+            raise RuntimeError(f"Failed to dispatch builder workflow: {r.status_code} {r.text}")
+        await ws.send(job_id, {"status":"dispatched", "message":"builder workflow dispatched"})
+        JOB_STORE[job_id] = {"status":"dispatched"}
+
+        # Poll for the new workflow run (we look for runs for the build_apk.yml and match start_time)
+        # We will poll up to N times
+        poll_start = time.time()
+        timeout = 60 * 20  # 20 minutes
+        poll_interval = 8
+        found_run_id = None
+        await ws.send(job_id, {"status":"polling", "message":"waiting for workflow run to appear on GitHub"})
+        while time.time() - poll_start < timeout:
+            # list runs for workflow file
+            runs_url = f"{GITHUB_API}/repos/{owner}/{PLAYFUL_BUILDER_REPO}/actions/workflows/build_apk.yml/runs?per_page=5"
+            rr = requests.get(runs_url, headers=GH_HEADERS, timeout=20)
+            if rr.status_code == 200:
+                runs = rr.json().get("workflow_runs", [])
+                # find the newest run which is in_progress or queued or completed and was created recently
+                if runs:
+                    # Find a run that started after dispatch time (approx)
+                    # Just pick the first run (most recent) and treat it as ours; best-effort.
+                    run = runs[0]
+                    found_run_id = run["id"]
+                    run_status = run["status"]
+                    run_conclusion = run.get("conclusion")
+                    await ws.send(job_id, {"status":"running", "run_id": found_run_id, "run_status": run_status, "conclusion": run_conclusion})
+                    # Poll until completed
+                    while run["status"] != "completed":
+                        time.sleep(poll_interval)
+                        r2 = requests.get(f"{GITHUB_API}/repos/{owner}/{PLAYFUL_BUILDER_REPO}/actions/runs/{found_run_id}", headers=GH_HEADERS, timeout=20)
+                        if r2.status_code == 200:
+                            run = r2.json()
+                            await ws.send(job_id, {"status":"in_progress", "run_status": run.get("status"), "updated_at": run.get("updated_at")})
+                        else:
+                            break
+                    # after completed
+                    r3 = requests.get(f"{GITHUB_API}/repos/{owner}/{PLAYFUL_BUILDER_REPO}/actions/runs/{found_run_id}/artifacts", headers=GH_HEADERS, timeout=20)
+                    if r3.status_code == 200:
+                        artifacts = r3.json().get("artifacts", [])
+                        # look for app-release artifact or zip
+                        apk_url = None
+                        artifacts_info = []
+                        for a in artifacts:
+                            artifacts_info.append({"name": a.get("name"), "id": a.get("id"), "size_in_bytes": a.get("size_in_bytes")})
+                            # to download artifact you need to call archive_download_url (requires token)
+                            if "app-release" in a.get("name", "") or a.get("name","").endswith(".apk") or a.get("name","").endswith(".zip"):
+                                apk_url = a.get("archive_download_url")
+                        await ws.send(job_id, {"status":"completed", "conclusion": run.get("conclusion"), "artifacts": artifacts_info, "apk_archive_url": apk_url})
+                        JOB_STORE[job_id] = {"status":"done", "conclusion": run.get("conclusion"), "artifacts": artifacts_info, "apk_archive_url": apk_url}
+                        return
+                    else:
+                        await ws.send(job_id, {"status":"completed", "message":"run completed but could not fetch artifacts", "code": r3.status_code})
+                        JOB_STORE[job_id] = {"status":"done", "message":"no artifacts info"}
+                        return
+            # not found or no runs yet
+            await asyncio.sleep(poll_interval)
+        # timeout
+        await ws.send(job_id, {"status":"failed", "message":"timed out waiting for workflow run"})
+        JOB_STORE[job_id] = {"status":"failed", "reason":"timeout"}
+    except Exception as e:
+        logger.exception("dispatch build failed")
+        await ws.send(job_id, {"status":"failed", "message": str(e)})
+        JOB_STORE[job_id] = {"status":"failed", "error": str(e)}
+
+# -------------------------
+# Endpoints
+# -------------------------
 @app.post("/history/append")
-async def http_append(req: AppendRequest):
-    return append_chat_history(req.email, req.game_name, req.role, req.content)
+async def http_history_append(req: AppendReq):
+    return append_chat_history(req.user_email, req.game_name, req.role, req.content)
 
 @app.post("/generate-and-commit")
-async def http_generate(req: GenerateRequest, background: BackgroundTasks):
+async def http_generate_and_commit(req: GenerateRequest, background: BackgroundTasks):
+    """
+    Request body:
+    { "email": "...", "game_name": "mount_climb", "prompt": "..." }
+    """
     job_id = str(uuid.uuid4())
     JOB_STORE[job_id] = {"status":"queued"}
     payload = {"email": req.email, "game_name": req.game_name, "prompt": req.prompt}
-    background.add_task(asyncio.create_task, do_generate_job(job_id, payload))
+    # schedule background job
+    background.add_task(asyncio.create_task, do_generate_and_commit(job_id, payload))
     return {"ok": True, "job_id": job_id, "ws_url": f"/ws/{job_id}"}
 
-@app.websocket("/ws/{job_id}")
-async def websocket_endpoint(websocket: WebSocket, job_id: str):
-    await ws.connect(job_id, websocket)
-    try:
-        while True:
-            # optional: keep alive heartbeat from client
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        await ws.disconnect(job_id, websocket)
-
 @app.post("/build-apk")
-async def http_build_apk(req: BuildRequest):
+async def http_build_apk(req: BuildRequest, background: BackgroundTasks):
     """
-    Triggers a GitHub Actions workflow_dispatch on the repo (username) with input 'folder' = game folder
-    The workflow (in the repo) should build Capacitor/Android release and create a Release with artifact.
+    Trigger builder workflow in Playful builder repo (Playful/build_apk.yml).
+    Returns a job_id and streams progress via websocket /status
     """
-    email = req.email
-    user = get_user_by_email(email)
-    if not user:
-        raise HTTPException(status_code=404, detail="user not found")
-    username_safe = safe_username_from_name(user.get("username") or user.get("email").split("@")[0])
-    folder = slugify(req.game_name)
-    owner = GITHUB_OWNER
-    repo = username_safe
-    # trigger workflow_dispatch
-    # The workflow file name we expect: build_apk.yml
-    dispatch_url = f"{GITHUB_API}/repos/{owner}/{repo}/actions/workflows/build_apk.yml/dispatches"
-    payload = {"ref": "main", "inputs": {"folder": folder, "admob_banner": req.admob_ids.get("banner","") if req.admob_ids else "", "admob_interstitial": req.admob_ids.get("interstitial","") if req.admob_ids else ""}}
-    r = requests.post(dispatch_url, headers=GH_HEADERS, json=payload)
-    if r.status_code not in (204,201):
-        raise HTTPException(status_code=500, detail=f"Failed trigger workflow: {r.status_code} {r.text}")
-    # store job and inform user they can open websocket to track (we will poll via GitHub API in a separate worker in production)
     job_id = str(uuid.uuid4())
-    JOB_STORE[job_id] = {"status":"queued", "message":"workflow dispatched"}
-    return {"ok": True, "job_id": job_id, "message":"Workflow dispatched, check repo Actions for progress"}
+    JOB_STORE[job_id] = {"status":"queued"}
+    payload = {"email": req.email, "game_name": req.game_name, "admob_ids": req.admob_ids or {}}
+    background.add_task(asyncio.create_task, do_dispatch_build_and_poll(job_id, payload))
+    return {"ok": True, "job_id": job_id, "ws_url": f"/ws/{job_id}"}
 
 @app.get("/status/{job_id}")
-async def status(job_id: str):
+async def http_status(job_id: str):
     return JOB_STORE.get(job_id, {"status":"unknown"})
 
 @app.get("/health")
-async def health():
-    return {"ok": True, "time": int(time.time())}
+async def http_health():
+    return {"ok": True, "time": int(time.time()), "build_mode": BUILD_MODE}
+
+@app.websocket("/ws/{job_id}")
+async def websocket_ws(websocket: WebSocket, job_id: str):
+    await ws.connect(job_id, websocket)
+    try:
+        while True:
+            # keep the socket alive; client can send pings
+            _ = await websocket.receive_text()
+    except WebSocketDisconnect:
+        await ws.disconnect(job_id, websocket)
+
+# -------------------------
+# Local test helper (optional)
+# -------------------------
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
