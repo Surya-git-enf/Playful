@@ -6,7 +6,7 @@ import httpx
 import asyncio
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect, HTTPException, status
+from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect, HTTPException
 from pydantic import BaseModel
 from supabase import create_client, Client
 
@@ -16,7 +16,7 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://your-project.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "your-anon-key")
 PLAYFUL_GH_TOKEN = os.getenv("PLAYFUL_GH_TOKEN", "your-gh-token")
-GITHUB_OWNER = os.getenv("GITHUB_OWNER", "Surya-git-enf")
+GITHUB_OWNER = os.getenv("GITHUB_OWNER", "Surya-git-enf") # e.g., Your Organization or User Account
 PLAYFUL_BUILDER_REPO = os.getenv("PLAYFUL_BUILDER_REPO", "Playful")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-gemini-key")
 GEMINI_API_ENDPOINT = os.getenv(
@@ -34,7 +34,6 @@ except Exception as e:
     print(f"Warning: Supabase client failed to initialize. {e}")
     supabase = None
 
-# FastAPI App
 app = FastAPI(title="Playful Backend", version="1.0.0")
 
 # ==========================================
@@ -114,7 +113,6 @@ async def generate_game_with_ai(prompt: str, history: list, game_name: str) -> d
             "estimated_credits": 2
         }
 
-    # Construct context from last 12 messages
     history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history[-12:]])
     system_instruction = f"""
     You are an expert game developer. Create a game named {game_name}.
@@ -122,23 +120,21 @@ async def generate_game_with_ai(prompt: str, history: list, game_name: str) -> d
     History:\n{history_text}\nUser Prompt:\n{prompt}
     """
     
-    payload = {
-        "contents": [{"parts": [{"text": system_instruction}]}]
-    }
+    payload = {"contents": [{"parts": [{"text": system_instruction}]}]}
     
     async with httpx.AsyncClient() as client:
-        resp = await client.post(GEMINI_API_ENDPOINT, json=payload)
+        resp = await client.post(GEMINI_API_ENDPOINT, json=payload, timeout=60.0)
         resp.raise_for_status()
         data = resp.json()
         raw_text = data['candidates'][0]['content']['parts'][0]['text']
         
-        # Clean markdown codeblocks if AI wraps JSON
         if raw_text.startswith("```json"):
             raw_text = raw_text.strip("`").replace("json\n", "")
             
         return json.loads(raw_text)
 
-async def github_api(method: str, endpoint: str, json_data: dict = None) -> dict:
+async def github_api(method: str, endpoint: str, json_data: dict = None, return_status: bool = False):
+    """Generic wrapper for GitHub API calls."""
     url = f"[https://api.github.com](https://api.github.com){endpoint}"
     headers = {
         "Authorization": f"Bearer {PLAYFUL_GH_TOKEN}",
@@ -146,25 +142,65 @@ async def github_api(method: str, endpoint: str, json_data: dict = None) -> dict
         "X-GitHub-Api-Version": "2022-11-28"
     }
     async with httpx.AsyncClient() as client:
-        resp = await client.request(method, url, headers=headers, json=json_data)
+        resp = await client.request(method, url, headers=headers, json=json_data, timeout=30.0)
+        
+        if return_status:
+            return resp.status_code, resp.json() if resp.text else {}
+            
         if resp.status_code >= 400:
-            raise Exception(f"GitHub API Error: {resp.text}")
+            raise Exception(f"GitHub API Error ({resp.status_code}): {resp.text}")
         return resp.json() if resp.text else {}
 
-async def commit_files_to_github(username: str, game_name: str, files: list):
-    """Commits multiple files to a specific folder in the user's repository."""
+# ==========================================
+# CORE GITHUB ORCHESTRATION
+# ==========================================
+async def ensure_user_repo_exists(username: str):
+    """Checks if the user's repository exists. If not, creates it on the fly."""
     repo_path = f"/repos/{GITHUB_OWNER}/{username}"
     
-    # 1. Ensure Repo Exists (Fallback logic can be added here)
-    # 2. Get reference to main branch
+    # Check if repo exists
+    status, _ = await github_api("GET", repo_path, return_status=True)
+    
+    if status == 404:
+        print(f"Repository for {username} not found. Creating it now...")
+        
+        create_payload = {
+            "name": username,
+            "description": f"Playful Games Repository for {username}",
+            "private": False, # Must be public for free GitHub Pages
+            "auto_init": True # Initializes with a README so we have a 'main' branch to commit to!
+        }
+        
+        # Determine if GITHUB_OWNER is an organization or a standard user account
+        # If it's a standard user, the endpoint is /user/repos. If an org, /orgs/{org}/repos.
+        # Assuming an organization here based on the 'Surya-git-enf' example.
+        try:
+            await github_api("POST", f"/orgs/{GITHUB_OWNER}/repos", create_payload)
+        except Exception as e:
+            if "Not Found" in str(e):
+                # Fallback if GITHUB_OWNER is actually a personal user account, not an org
+                await github_api("POST", "/user/repos", create_payload)
+        
+        # Give GitHub a moment to fully initialize the main branch in their backend
+        await asyncio.sleep(3)
+    elif status >= 400:
+        raise Exception(f"Failed to verify repository status. HTTP {status}")
+    else:
+        print(f"Repository for {username} already exists.")
+
+async def commit_files_to_github(username: str, game_name: str, files: list):
+    """Commits game files into a specific folder inside the user's repository."""
+    repo_path = f"/repos/{GITHUB_OWNER}/{username}"
+    
+    # 1. Get reference to main branch
     ref_data = await github_api("GET", f"{repo_path}/git/ref/heads/main")
     base_sha = ref_data["object"]["sha"]
     
-    # 3. Get base tree
+    # 2. Get base tree
     commit_data = await github_api("GET", f"{repo_path}/git/commits/{base_sha}")
     tree_sha = commit_data["tree"]["sha"]
     
-    # 4. Create blobs and tree items
+    # 3. Create blobs and format tree items
     tree_items = []
     for file in files:
         sanitized_content = sanitize_code(file["content"])
@@ -175,25 +211,25 @@ async def commit_files_to_github(username: str, game_name: str, files: list):
             "content": sanitized_content, "encoding": "utf-8"
         })
         tree_items.append({
-            "path": f"{game_name}/{file['path']}",
+            "path": f"{game_name}/{file['path']}", # Routes exactly into the user's game folder!
             "mode": "100644",
             "type": "blob",
             "sha": blob["sha"]
         })
         
-    # 5. Create new tree
+    # 4. Create new tree
     new_tree = await github_api("POST", f"{repo_path}/git/trees", {
         "base_tree": tree_sha, "tree": tree_items
     })
     
-    # 6. Create Commit
+    # 5. Create Commit
     new_commit = await github_api("POST", f"{repo_path}/git/commits", {
-        "message": f"Update game {game_name} via Playful AI",
+        "message": f"Deploy {game_name} via Playful AI",
         "tree": new_tree["sha"],
         "parents": [base_sha]
     })
     
-    # 7. Update Ref
+    # 6. Update main branch Reference
     await github_api("PATCH", f"{repo_path}/git/refs/heads/main", {
         "sha": new_commit["sha"]
     })
@@ -205,40 +241,42 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
     try:
         await manager.send_update(job_id, "initializing", "Setting up environment...")
         
-        # Extract history
         chat_history = user.get("chat_history", {})
         game_history = chat_history.get(req.game_name, [])
         
-        # Generate Code
+        # 1. Generate Code
         await manager.send_update(job_id, "thinking", "AI is designing your game...")
         manifest = await generate_game_with_ai(req.prompt, game_history, req.game_name)
         
-        # Deduct credits
+        # 2. Deduct credits
         cost = manifest.get("estimated_credits", 1)
         if user["credits"] < cost:
             raise Exception("Insufficient credits.")
         supabase.table("users").update({"credits": user["credits"] - cost}).eq("id", user["id"]).execute()
         
-        # Commit Code
-        await manager.send_update(job_id, "committing", "Saving code to GitHub...")
+        # 3. Ensure Repo Exists (Auto-create if this is the first game!)
+        await manager.send_update(job_id, "initializing", f"Preparing your repository: {user['username']}...")
+        await ensure_user_repo_exists(user["username"])
+        
+        # 4. Commit Code to Folder
+        await manager.send_update(job_id, "committing", f"Saving {req.game_name} to GitHub...")
         await commit_files_to_github(user["username"], req.game_name, manifest["files"])
         
-        # Enable Pages (Safely ignore if already enabled)
+        # 5. Enable Pages (Safely ignore if already enabled from a previous game)
         await manager.send_update(job_id, "enabling pages", "Publishing game to web...")
-        try:
-            await github_api("POST", f"/repos/{GITHUB_OWNER}/{user['username']}/pages", {
-                "source": {"branch": "main", "path": "/"}
-            })
-        except Exception as e:
-            if "already exists" not in str(e).lower():
-                pass # Log error but continue
+        status, resp = await github_api("POST", f"/repos/{GITHUB_OWNER}/{user['username']}/pages", {
+            "source": {"branch": "main", "path": "/"}
+        }, return_status=True)
+        if status not in [201, 409]: # 201 Created, 409 Conflict (already exists)
+            print(f"Pages Notice: {resp}")
                 
-        # Update Chat History
+        # 6. Update Chat History
         game_history.append({"role": "user", "content": req.prompt, "ts": datetime.utcnow().timestamp()})
         game_history.append({"role": "assistant", "content": "Game generated successfully", "ts": datetime.utcnow().timestamp()})
         chat_history[req.game_name] = game_history
         supabase.table("users").update({"chat_history": chat_history}).eq("id", user["id"]).execute()
         
+        # 7. Deliver Final URL
         preview_url = f"https://{GITHUB_OWNER}.github.io/{user['username']}/{req.game_name}/index.html"
         await manager.send_update(job_id, "done", "Game is ready!", {"preview_url": preview_url})
         
@@ -250,12 +288,10 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
     try:
         await manager.send_update(job_id, "initializing", "Preparing APK build pipeline...")
         
-        # Deduct build credit
         if user["builds"] < 1:
             raise Exception("Insufficient build credits.")
         supabase.table("users").update({"builds": user["builds"] - 1}).eq("id", user["id"]).execute()
         
-        # Dispatch GitHub Action
         await manager.send_update(job_id, "building apk", "Dispatching build worker...")
         dispatch_payload = {
             "ref": "main",
@@ -269,8 +305,6 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
         }
         await github_api("POST", f"/repos/{GITHUB_OWNER}/{PLAYFUL_BUILDER_REPO}/actions/workflows/build_apk.yml/dispatches", dispatch_payload)
         
-        # Simulate polling for brevity in this architectual setup. 
-        # In prod: use `/actions/runs` to find the exact run ID based on timing/actor, then poll `/actions/runs/{run_id}`
         for i in range(5):
             await asyncio.sleep(5)
             await manager.send_update(job_id, "building apk", f"Compiling native code... (Step {i+1}/5)")
@@ -284,7 +318,6 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
 # ==========================================
 # API ENDPOINTS
 # ==========================================
-
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
@@ -334,18 +367,15 @@ async def append_history(req: HistoryAppendRequest):
 async def websocket_endpoint(websocket: WebSocket, job_id: str):
     await manager.connect(job_id, websocket)
     try:
-        # Send current status immediately upon connection
         if job_id in JOB_STORE:
             await websocket.send_json({"job_id": job_id, **JOB_STORE[job_id]})
             
         while True:
-            # Keep connection alive, wait for client messages if necessary
-            data = await websocket.receive_text()
-            # Handle client-side pings or cancellations here
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(job_id)
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-            
+    
