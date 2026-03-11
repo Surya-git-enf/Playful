@@ -4,3 +4,6 @@ requests
 supabase
 pydantic
 python-dotenv
+httpx
+websockets
+google-generativeai
