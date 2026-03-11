@@ -21,7 +21,7 @@ PLAYFUL_BUILDER_REPO = os.getenv("PLAYFUL_BUILDER_REPO", "Playful")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-gemini-key")
 GEMINI_API_ENDPOINT = os.getenv(
     "GEMINI_API_ENDPOINT", 
-    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={GEMINI_API_KEY}"
+    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key={GEMINI_API_KEY}"
 )
 BUILD_MODE = os.getenv("BUILD_MODE", "simulation") # 'simulation' or 'production'
 PLAYFUL_ADMOB_BANNER_ID = os.getenv("PLAYFUL_ADMOB_BANNER_ID", "ca-app-pub-xxx")
