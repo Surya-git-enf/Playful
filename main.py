@@ -125,21 +125,23 @@ async def generate_game_with_ai(prompt: str, history: list, game_name: str) -> d
         system_instruction=system_instruction,
         generation_config={"response_mime_type": "application/json"}
     )
-        try:
-            
-            response = await model.generate_content_async(prompt)
-            raw_text = response.text
+    
+    try:
+        response = await model.generate_content_async(prompt)
+        raw_text = response.text
         
-            # Strip markdown formatting just in case Gemini adds it
-            if raw_text.startswith("```json"):
-                raw_text = raw_text.strip("`").replace("json\n", "")
+        # Strip markdown formatting just in case Gemini adds it
+        if raw_text.startswith("```json"):
+            raw_text = raw_text.strip("`").replace("json\n", "")
             
-            return json.loads(raw_text)
+        return json.loads(raw_text)
     except Exception as e:
         # This will now capture the EXACT error from Google and send it to you
         exact_error = f"Google AI Error: {str(e)}"
         print(exact_error)
         raise Exception(exact_error) 
+        
+    
         
 
         
