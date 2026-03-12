@@ -121,7 +121,7 @@ async def generate_game_with_ai(prompt: str, history: list, game_name: str) -> d
     
     # Initialize the Flash model (Fast, 15 RPM free limit)
     model = genai.GenerativeModel(
-        model_name="models/gemini-2.5-pro",
+        model_name="models/gemini-2.5-flash",
         system_instruction=system_instruction,
         generation_config={"response_mime_type": "application/json"}
     )
