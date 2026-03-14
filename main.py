@@ -37,12 +37,12 @@ except Exception as e:
     print(f"Warning: Supabase client failed to initialize. {e}")
     supabase = None
 
-app = FastAPI(title="Playful Backend - Production", version="3.0.0")
+app = FastAPI(title="Playful Backend - Production", version="3.1.0")
 
 # Allow frontend to talk to Render API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Change to your frontend domain later (e.g., "https://playful.com")
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -219,8 +219,9 @@ async def generate_game_with_ai(prompt: str, history: list, game_name: str, curr
     History:\n{history_text}
     """
     
+    # 🚨 CHANGED TO 1.5-FLASH FOR MAXIMUM FREE TIER COMPATIBILITY
     model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash", 
+        model_name="gemini-1.5-flash", 
         system_instruction=system_instruction,
         generation_config={"response_mime_type": "application/json"}
     )
@@ -232,8 +233,10 @@ async def generate_game_with_ai(prompt: str, history: list, game_name: str, curr
             raw_text = raw_text.strip("`").replace("json\n", "")
         return json.loads(raw_text)
     except Exception as e:
-        print(f"Google AI Error: {str(e)}")
-        raise Exception("AI failed to process request. Please try again.")
+        # 🚨 THIS WILL NOW REVEAL THE EXACT GOOGLE ERROR TO YOUR TESTER SCRIPT!
+        exact_error = f"Google AI Error: {str(e)}"
+        print(exact_error)
+        raise Exception(exact_error)
 
 # ==========================================
 # BACKGROUND WORKFLOWS
@@ -252,7 +255,7 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
         allowed_games = plan_limits.get(user.get("plan", "free"), 3)
 
         if not current_code and current_games >= allowed_games:
-            raise Exception("limit_reached") # Exact string for frontend
+            raise Exception("limit_reached")
         
         if current_code:
             await manager.send_update(job_id, "Rewriting the Matrix", "Injecting your modifications into the game core...")
@@ -264,7 +267,7 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
         # --- DYNAMIC CREDIT CHECK ---
         cost = manifest.get("estimated_credits", 1)
         if user["credits"] < cost:
-            raise Exception("insufficient_credits") # Exact string for frontend
+            raise Exception("insufficient_credits")
             
         supabase.table("users").update({"credits": user["credits"] - cost}).eq("id", user["id"]).execute()
         
@@ -301,16 +304,14 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
 
         # --- SMART MONETIZATION LOGIC ---
         if is_free_user:
-            # Force Playful Ad IDs, Watermark, and Timings
             final_banner = PLAYFUL_DEFAULT_BANNER_ID
             final_interstitial = PLAYFUL_DEFAULT_INTERSTITIAL_ID
             final_ad_interval = PLAYFUL_AD_INTERVAL_MINS
             watermark_enabled = "true"
         else:
-            # Paid User: Use their IDs, no watermark
             final_banner = req.admob_banner or ""
             final_interstitial = req.admob_interstitial or ""
-            final_ad_interval = "10" # Default 10 mins for paid users if they want it
+            final_ad_interval = "10" 
             watermark_enabled = "false"
 
         supabase.table("users").update({"builds": user["builds"] - 1}).eq("id", user["id"]).execute()
@@ -343,6 +344,11 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
 # ==========================================
 # REST API ENDPOINTS
 # ==========================================
+@app.get("/health")
+async def health_check():
+    """Render uses this to verify the server is online."""
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
 @app.post("/generate-commit")
 async def api_generate_and_commit(req: GenerateRequest, background_tasks: BackgroundTasks):
     user = await get_user(req.email)
@@ -459,12 +465,7 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
     except WebSocketDisconnect:
         manager.disconnect(job_id)
 
-@app.get("/health")
-async def health():
-    return {"status":"Good 👍 "}
-
 if __name__ == "__main__":
     import uvicorn
-    # Make sure this port maps to Render's exposed environment PORT if running there!
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
