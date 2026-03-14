@@ -353,7 +353,7 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
             await asyncio.sleep(5)
             await manager.send_update(job_id, "Compiling APK", f"Generating native Android code... (Step {i+1}/5)")
             
-        apk_url = f"[https://github.com/](https://github.com/){GITHUB_OWNER}/{PLAYFUL_BUILDER_REPO}/actions/artifacts/latest"
+        apk_url = f"https://github.com/{GITHUB_OWNER}/{PLAYFUL_BUILDER_REPO}/actions"
         await manager.send_update(job_id, "Build Complete!", "Your APK is ready for deployment.", {"apk_url": apk_url})
 
     except Exception as e:
