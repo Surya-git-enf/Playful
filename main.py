@@ -8,6 +8,7 @@ import asyncio
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client, Client
 import google.generativeai as genai
@@ -21,7 +22,12 @@ PLAYFUL_GH_TOKEN = os.getenv("PLAYFUL_GH_TOKEN", "your-gh-token")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER", "Surya-git-enf")
 PLAYFUL_BUILDER_REPO = os.getenv("PLAYFUL_BUILDER_REPO", "Playful")
 
-# AI Setup - Using the fastest, most capable coding model for API
+# Monetization Defaults (For Free Users)
+PLAYFUL_DEFAULT_BANNER_ID = os.getenv("PLAYFUL_DEFAULT_BANNER_ID", "ca-app-pub-xxx/banner")
+PLAYFUL_DEFAULT_INTERSTITIAL_ID = os.getenv("PLAYFUL_DEFAULT_INTERSTITIAL_ID", "ca-app-pub-xxx/interstitial")
+PLAYFUL_AD_INTERVAL_MINS = os.getenv("PLAYFUL_AD_INTERVAL_MINS", "10")
+
+# AI Setup
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSy_YOUR_ACTUAL_KEY_HERE")
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -31,7 +37,16 @@ except Exception as e:
     print(f"Warning: Supabase client failed to initialize. {e}")
     supabase = None
 
-app = FastAPI(title="Playful Backend - Studio Edition", version="3.0.0")
+app = FastAPI(title="Playful Backend - Production", version="3.0.0")
+
+# Allow frontend to talk to Render API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Change to your frontend domain later (e.g., "https://playful.com")
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ==========================================
 # STATE & JOB MANAGEMENT
@@ -199,13 +214,13 @@ async def generate_game_with_ai(prompt: str, history: list, game_name: str, curr
         "project_name": "string",
         "files": [ {{ "path": "index.html", "type": "text", "content": "<html>...</html>" }} ],
         "assistant_message": "string (A friendly conversational reply explaining what you built/changed. Be enthusiastic!)",
-        "estimated_credits": int (1 for minor edits, 2 for large creations)
+        "estimated_credits": int (1 for minor edits, 2-5 for large creations)
     }}
     History:\n{history_text}
     """
     
     model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash", # <--- Best code generation for the API!
+        model_name="gemini-2.0-flash", 
         system_instruction=system_instruction,
         generation_config={"response_mime_type": "application/json"}
     )
@@ -229,10 +244,16 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
         
         chat_history = user.get("chat_history", {})
         game_history = chat_history.get(req.game_name, [])
-        
         current_code = await fetch_existing_game_code(user["username"], req.game_name)
         
-        # Determine status message based on whether it's new or an edit
+        # --- PLAN LIMIT CHECK ---
+        current_games = len(chat_history.keys())
+        plan_limits = {"free": 3, "creator": 10, "studio": 30}
+        allowed_games = plan_limits.get(user.get("plan", "free"), 3)
+
+        if not current_code and current_games >= allowed_games:
+            raise Exception("limit_reached") # Exact string for frontend
+        
         if current_code:
             await manager.send_update(job_id, "Rewriting the Matrix", "Injecting your modifications into the game core...")
         else:
@@ -240,11 +261,11 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
             
         manifest = await generate_game_with_ai(req.prompt, game_history, req.game_name, current_code)
         
+        # --- DYNAMIC CREDIT CHECK ---
         cost = manifest.get("estimated_credits", 1)
         if user["credits"] < cost:
-            raise Exception(f"Insufficient credits. This task requires {cost} credits.")
+            raise Exception("insufficient_credits") # Exact string for frontend
             
-        # Debit wallet
         supabase.table("users").update({"credits": user["credits"] - cost}).eq("id", user["id"]).execute()
         
         await manager.send_update(job_id, "Initializing Server", f"Preparing your global repository...")
@@ -273,13 +294,24 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
     try:
         await manager.send_update(job_id, "Initializing Build", "Validating plan and preparing pipeline...")
         
-        if user["builds"] < 1:
-            raise Exception("Insufficient build credits.")
+        if user.get("builds", 0) < 1:
+            raise Exception("insufficient_builds")
             
-        # AdMob check for Paid Plans
-        if req.admob_banner or req.admob_interstitial:
-            if user["plan"] == "free":
-                raise Exception("Custom AdMob integration requires a Creator or Studio plan.")
+        is_free_user = user.get("plan", "free") == "free"
+
+        # --- SMART MONETIZATION LOGIC ---
+        if is_free_user:
+            # Force Playful Ad IDs, Watermark, and Timings
+            final_banner = PLAYFUL_DEFAULT_BANNER_ID
+            final_interstitial = PLAYFUL_DEFAULT_INTERSTITIAL_ID
+            final_ad_interval = PLAYFUL_AD_INTERVAL_MINS
+            watermark_enabled = "true"
+        else:
+            # Paid User: Use their IDs, no watermark
+            final_banner = req.admob_banner or ""
+            final_interstitial = req.admob_interstitial or ""
+            final_ad_interval = "10" # Default 10 mins for paid users if they want it
+            watermark_enabled = "false"
 
         supabase.table("users").update({"builds": user["builds"] - 1}).eq("id", user["id"]).execute()
         
@@ -290,8 +322,10 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
                 "owner": GITHUB_OWNER, 
                 "repo": user["username"], 
                 "folder": req.game_name,
-                "admob_banner": req.admob_banner or "PLAYFUL_DEFAULT_BANNER_ID",
-                "admob_interstitial": req.admob_interstitial or "PLAYFUL_DEFAULT_INTERSTITIAL_ID"
+                "admob_banner": final_banner,
+                "admob_interstitial": final_interstitial,
+                "ad_interval_minutes": final_ad_interval,
+                "watermark": watermark_enabled
             }
         }
         await github_api("POST", f"/repos/{GITHUB_OWNER}/{PLAYFUL_BUILDER_REPO}/actions/workflows/build_apk.yml/dispatches", dispatch_payload)
@@ -324,13 +358,11 @@ async def api_edit_game_name(req: EditGameNameRequest):
     repo_path = f"/repos/{GITHUB_OWNER}/{username}"
     
     try:
-        # Get base tree
         ref_data = await github_api("GET", f"{repo_path}/git/ref/heads/main")
         base_sha = ref_data["object"]["sha"]
         commit_data = await github_api("GET", f"{repo_path}/git/commits/{base_sha}")
         base_tree_sha = commit_data["tree"]["sha"]
         
-        # Find SHA of the old game folder
         tree_data = await github_api("GET", f"{repo_path}/git/trees/{base_tree_sha}")
         old_folder_sha = None
         for item in tree_data.get("tree", []):
@@ -341,7 +373,6 @@ async def api_edit_game_name(req: EditGameNameRequest):
         if not old_folder_sha:
             raise Exception("Original game folder not found on GitHub.")
 
-        # Create new tree pointing to the new name
         tree_items = [
             {"path": req.old_game_name, "mode": "040000", "type": "tree", "sha": None}, 
             {"path": req.new_game_name, "mode": "040000", "type": "tree", "sha": old_folder_sha} 
@@ -351,7 +382,6 @@ async def api_edit_game_name(req: EditGameNameRequest):
         new_commit = await github_api("POST", f"{repo_path}/git/commits", {"message": f"Rename game {req.old_game_name} -> {req.new_game_name}", "tree": new_tree["sha"], "parents": [base_sha]})
         await github_api("PATCH", f"{repo_path}/git/refs/heads/main", {"sha": new_commit["sha"]})
         
-        # Update Database History
         chat_history = user.get("chat_history", {})
         if req.old_game_name in chat_history:
             chat_history[req.new_game_name] = chat_history.pop(req.old_game_name)
@@ -431,5 +461,6 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-                             
+    # Make sure this port maps to Render's exposed environment PORT if running there!
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
