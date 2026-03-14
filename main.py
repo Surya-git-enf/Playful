@@ -353,9 +353,11 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
             await asyncio.sleep(5)
             await manager.send_update(job_id, "Compiling APK", f"Generating native Android code... (Step {i+1}/5)")
             
-        apk_url = f"https://github.com/{GITHUB_OWNER}/{PLAYFUL_BUILDER_REPO}/actions"
+                # This is a DIRECT public download link to the exact APK file!
+        apk_url = f"https://github.com/{GITHUB_OWNER}/{PLAYFUL_BUILDER_REPO}/releases/download/latest-{user['username']}-{req.game_name}/{req.game_name}.apk"
+        
         await manager.send_update(job_id, "Build Complete!", "Your APK is ready for deployment.", {"apk_url": apk_url})
-
+        
     except Exception as e:
         await manager.send_update(job_id, "failed", str(e))
 
