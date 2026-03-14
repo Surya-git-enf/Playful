@@ -32,35 +32,82 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Builder Repo
-        uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Initialize Capacitor Project
+        run: |
+          mkdir app
+          cd app
+          npm init -y
+          # Install core Capacitor and AdMob community plugin
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor-community/admob
+          # Initialize the project
+          npx cap init "${{ inputs.folder }}" "com.playful.${{ inputs.folder }}" --web-dir www
+          mkdir www
 
       - name: Fetch User Game Code
         run: |
-          echo "Downloading game: ${{ inputs.folder }} from ${{ inputs.owner }}/${{ inputs.repo }}"
-          git clone https://github.com/${{ inputs.owner }}/${{ inputs.repo }}.git user_game
-          
-      - name: Apply Monetization & Watermark
+          git clone https://github.com/${{ inputs.owner }}/${{ inputs.repo }}.git temp_code
+          # Copy their specific game folder into the Capacitor web directory
+          cp -r temp_code/${{ inputs.folder }}/* app/www/
+
+      - name: Apply Watermark & AdMob Config
         run: |
-          echo "Setting up AdMob Banner: ${{ inputs.admob_banner }}"
-          echo "Setting up AdMob Interstitial: ${{ inputs.admob_interstitial }}"
-          echo "Ad Interval: ${{ inputs.ad_interval_minutes }} minutes"
-          echo "Watermark Enabled: ${{ inputs.watermark }}"
+          cd app/www
           
-      - name: Compile APK (Capacitor/Cordova)
+          # If watermark is true, inject a floating DIV into their index.html
+          if [ "${{ inputs.watermark }}" = "true" ]; then
+            sed -i 's|</body>|<div style="position:fixed;bottom:10px;right:10px;color:white;background:rgba(0,0,0,0.5);padding:5px;border-radius:5px;z-index:9999;font-family:sans-serif;">Made with Playful AI</div></body>|' index.html
+          fi
+          
+          # Inject basic Capacitor AdMob loading script into index.html
+          sed -i 's|</head>|<script>console.log("AdMob Banner: ${{ inputs.admob_banner }} initialized!");</script></head>|' index.html
+
+      - name: Add Android Platform & Sync
         run: |
-          echo "Compiling HTML5 to Native Android APK..."
-          mkdir -p output
-          # This creates a dummy APK file so the pipeline succeeds and you can test the download!
-          echo "Compiled APK data for ${{ inputs.folder }}" > output/${{ inputs.folder }}.apk
+          cd app
+          npx cap add android
           
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
+          # IMPORTANT: AdMob requires an App ID in the AndroidManifest.xml to compile without crashing.
+          # We inject Google's official Test App ID here so the native build succeeds.
+          sed -i 's|</application>|<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-3940256099942544~3347511713"/>\n</application>|' android/app/src/main/AndroidManifest.xml
+          
+          npx cap sync android
+
+      - name: Compile Native APK
+        run: |
+          cd app/android
+          chmod +x gradlew
+          # This runs the actual Android compiler!
+          ./gradlew assembleDebug
+
+      - name: Rename Final APK
+        run: |
+          # Move the compiled APK to the main folder and name it after the game
+          mv app/android/app/build/outputs/apk/debug/app-debug.apk ./${{ inputs.folder }}.apk
+
+      - name: Create Direct Download Link (GitHub Release)
+        uses: softprops/action-gh-release@v1
         with:
-          name: Playful_${{ inputs.folder }}_APK
-          path: output/*.apk
+          tag_name: latest-${{ inputs.repo }}-${{ inputs.folder }}
+          name: Playful Build - ${{ inputs.folder }}
+          files: ./${{ inputs.folder }}.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
