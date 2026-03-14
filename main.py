@@ -37,7 +37,7 @@ except Exception as e:
     print(f"Warning: Supabase client failed to initialize. {e}")
     supabase = None
 
-app = FastAPI(title="Playful Backend - Production", version="3.1.0")
+app = FastAPI(title="Playful Backend - Production", version="4.0.0")
 
 # Allow frontend to talk to Render API
 app.add_middleware(
@@ -101,8 +101,12 @@ class EditGameNameRequest(BaseModel):
 class BuildAPKRequest(BaseModel):
     email: str
     game_name: str
-    admob_banner: Optional[str] = None
-    admob_interstitial: Optional[str] = None
+
+class AddAdmobRequest(BaseModel):
+    email: str
+    admob_banner: str
+    admob_interstitial: str
+    admob_interval: str
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -115,7 +119,11 @@ async def get_user(email: str) -> dict:
     
     user_data = res.data[0]
     if "plan" not in user_data:
-        user_data["plan"] = "free" # Default to free plan
+        user_data["plan"] = "free"
+    if "builds" not in user_data:
+        user_data["builds"] = 0
+    if "credits" not in user_data:
+        user_data["credits"] = 0
     return user_data
 
 def sanitize_code(content: str) -> str:
@@ -219,9 +227,8 @@ async def generate_game_with_ai(prompt: str, history: list, game_name: str, curr
     History:\n{history_text}
     """
     
-    # 🚨 CHANGED TO 1.5-FLASH FOR MAXIMUM FREE TIER COMPATIBILITY
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash", 
+        model_name="gemini-1.5-flash", 
         system_instruction=system_instruction,
         generation_config={"response_mime_type": "application/json"}
     )
@@ -233,7 +240,6 @@ async def generate_game_with_ai(prompt: str, history: list, game_name: str, curr
             raw_text = raw_text.strip("`").replace("json\n", "")
         return json.loads(raw_text)
     except Exception as e:
-        # 🚨 THIS WILL NOW REVEAL THE EXACT GOOGLE ERROR TO YOUR TESTER SCRIPT!
         exact_error = f"Google AI Error: {str(e)}"
         print(exact_error)
         raise Exception(exact_error)
@@ -249,7 +255,7 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
         game_history = chat_history.get(req.game_name, [])
         current_code = await fetch_existing_game_code(user["username"], req.game_name)
         
-        # --- PLAN LIMIT CHECK ---
+        # --- PLAN LIMIT CHECK FOR GENERATION ---
         current_games = len(chat_history.keys())
         plan_limits = {"free": 3, "creator": 10, "studio": 30}
         allowed_games = plan_limits.get(user.get("plan", "free"), 3)
@@ -264,7 +270,7 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
             
         manifest = await generate_game_with_ai(req.prompt, game_history, req.game_name, current_code)
         
-        # --- DYNAMIC CREDIT CHECK ---
+        # --- DYNAMIC CREDIT CHECK FOR GENERATION ---
         cost = manifest.get("estimated_credits", 1)
         if user["credits"] < cost:
             raise Exception("insufficient_credits")
@@ -297,24 +303,36 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
     try:
         await manager.send_update(job_id, "Initializing Build", "Validating plan and preparing pipeline...")
         
+        # 1. Check if they have builds remaining
         if user.get("builds", 0) < 1:
             raise Exception("insufficient_builds")
             
         is_free_user = user.get("plan", "free") == "free"
 
-        # --- SMART MONETIZATION LOGIC ---
+        # 2. Check build credit cost (5 for free, 10 for paid)
+        build_cost = 5 if is_free_user else 10
+        if user.get("credits", 0) < build_cost:
+            raise Exception("insufficient_credits")
+
+        # 3. Smart Monetization Logic
         if is_free_user:
             final_banner = PLAYFUL_DEFAULT_BANNER_ID
             final_interstitial = PLAYFUL_DEFAULT_INTERSTITIAL_ID
             final_ad_interval = PLAYFUL_AD_INTERVAL_MINS
             watermark_enabled = "true"
         else:
-            final_banner = req.admob_banner or ""
-            final_interstitial = req.admob_interstitial or ""
-            final_ad_interval = "10" 
+            final_banner = user.get("admob_banner") or ""
+            final_interstitial = user.get("admob_interstitial") or ""
+            final_ad_interval = user.get("admob_interval") or "10" 
             watermark_enabled = "false"
 
-        supabase.table("users").update({"builds": user["builds"] - 1}).eq("id", user["id"]).execute()
+        # 4. Deduct BOTH the build limit AND the credits
+        new_builds = user["builds"] - 1
+        new_credits = user["credits"] - build_cost
+        supabase.table("users").update({
+            "builds": new_builds, 
+            "credits": new_credits
+        }).eq("id", user["id"]).execute()
         
         await manager.send_update(job_id, "Compiling APK", "Dispatching secure build worker...")
         dispatch_payload = {
@@ -346,7 +364,6 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
 # ==========================================
 @app.get("/health")
 async def health_check():
-    """Render uses this to verify the server is online."""
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 @app.post("/generate-commit")
@@ -356,6 +373,22 @@ async def api_generate_and_commit(req: GenerateRequest, background_tasks: Backgr
     JOB_STORE[job_id] = {"status": "queued", "message": "Analyzing request..."}
     background_tasks.add_task(generate_and_commit_workflow, job_id, req, user)
     return {"job_id": job_id, "status": "queued"}
+
+@app.post("/addadmob")
+async def api_add_admob(req: AddAdmobRequest):
+    user = await get_user(req.email)
+    if user.get("plan", "free") == "free":
+        raise HTTPException(status_code=403, detail="AdMob integration requires a Creator or Studio plan.")
+        
+    try:
+        supabase.table("users").update({
+            "admob_banner": req.admob_banner,
+            "admob_interstitial": req.admob_interstitial,
+            "admob_interval": req.admob_interval
+        }).eq("id", user["id"]).execute()
+        return {"status": "success", "message": "AdMob settings locked in! 💰"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/edit-game-name")
 async def api_edit_game_name(req: EditGameNameRequest):
@@ -469,3 +502,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
+      
