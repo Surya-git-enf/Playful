@@ -459,6 +459,10 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
     except WebSocketDisconnect:
         manager.disconnect(job_id)
 
+@app.get("/health")
+async def health():
+    return {"status":"Good 👍 "}
+
 if __name__ == "__main__":
     import uvicorn
     # Make sure this port maps to Render's exposed environment PORT if running there!
