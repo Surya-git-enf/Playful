@@ -37,9 +37,8 @@ except Exception as e:
     print(f"Warning: Supabase client failed to initialize. {e}")
     supabase = None
 
-app = FastAPI(title="Playful Backend - Production", version="4.0.0")
+app = FastAPI(title="Playful Backend - Production", version="5.0.0")
 
-# Allow frontend to talk to Render API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -255,7 +254,6 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
         game_history = chat_history.get(req.game_name, [])
         current_code = await fetch_existing_game_code(user["username"], req.game_name)
         
-        # --- PLAN LIMIT CHECK FOR GENERATION ---
         current_games = len(chat_history.keys())
         plan_limits = {"free": 3, "creator": 10, "studio": 30}
         allowed_games = plan_limits.get(user.get("plan", "free"), 3)
@@ -270,7 +268,6 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
             
         manifest = await generate_game_with_ai(req.prompt, game_history, req.game_name, current_code)
         
-        # --- DYNAMIC CREDIT CHECK FOR GENERATION ---
         cost = manifest.get("estimated_credits", 1)
         if user["credits"] < cost:
             raise Exception("insufficient_credits")
@@ -286,7 +283,6 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
         await manager.send_update(job_id, "Opening Portals", "Configuring public access links...")
         await github_api("POST", f"/repos/{GITHUB_OWNER}/{user['username']}/pages", {"source": {"branch": "main", "path": "/"}}, return_status=True)
                 
-        # Save Chat
         ts = datetime.utcnow().timestamp()
         game_history.append({"role": "user", "content": req.prompt, "ts": ts})
         game_history.append({"role": "assistant", "content": manifest["assistant_message"], "ts": ts + 1})
@@ -301,20 +297,21 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
 
 async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
     try:
-        await manager.send_update(job_id, "Initializing Build", "Validating plan and preparing pipeline...")
+        is_free_user = user.get("plan", "free") == "free"
+
+        # 0% - Booting up tailored to plan
+        if is_free_user:
+            await manager.send_update(job_id, "Initializing", "Booting up the Playful Engine... 🚀", {"progress": 0})
+        else:
+            await manager.send_update(job_id, "Initializing", "Verifying Pro License... 👑", {"progress": 0})
         
-        # 1. Check if they have builds remaining
         if user.get("builds", 0) < 1:
             raise Exception("insufficient_builds")
             
-        is_free_user = user.get("plan", "free") == "free"
-
-        # 2. Check build credit cost (5 for free, 10 for paid)
         build_cost = 5 if is_free_user else 10
         if user.get("credits", 0) < build_cost:
             raise Exception("insufficient_credits")
 
-        # 3. Smart Monetization Logic
         if is_free_user:
             final_banner = PLAYFUL_DEFAULT_BANNER_ID
             final_interstitial = PLAYFUL_DEFAULT_INTERSTITIAL_ID
@@ -326,7 +323,6 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
             final_ad_interval = user.get("admob_interval") or "10" 
             watermark_enabled = "false"
 
-        # 4. Deduct BOTH the build limit AND the credits
         new_builds = user["builds"] - 1
         new_credits = user["credits"] - build_cost
         supabase.table("users").update({
@@ -334,7 +330,7 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
             "credits": new_credits
         }).eq("id", user["id"]).execute()
         
-        await manager.send_update(job_id, "Compiling APK", "Dispatching secure build worker...")
+        # Triggering the GitHub Workflow
         dispatch_payload = {
             "ref": "main", 
             "inputs": {
@@ -349,15 +345,49 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
         }
         await github_api("POST", f"/repos/{GITHUB_OWNER}/{PLAYFUL_BUILDER_REPO}/actions/workflows/build_apk.yml/dispatches", dispatch_payload)
         
-        for i in range(5):
-            await asyncio.sleep(5)
-            await manager.send_update(job_id, "Compiling APK", f"Generating native Android code... (Step {i+1}/5)")
+        # ==========================================
+        # EPIC DYNAMIC FRONTEND ANIMATION SEQUENCE
+        # ==========================================
+        
+        await asyncio.sleep(5)
+        await manager.send_update(job_id, "Fetching Code", "Downloading your 3D universe... 🌌", {"progress": 20})
+        
+        await asyncio.sleep(15)
+        if is_free_user:
+            await manager.send_update(job_id, "Watermark", "Applying the Playful Watermark... 💧", {"progress": 35})
+        else:
+            await manager.send_update(job_id, "Watermark", "Stripping all watermarks for Pro Build... 🚫💧", {"progress": 35})
             
-                # This is a DIRECT public download link to the exact APK file!
-        apk_url = f"https://github.com/{GITHUB_OWNER}/{PLAYFUL_BUILDER_REPO}/releases/download/latest-{user['username']}-{req.game_name}/{req.game_name}.apk"
+        await asyncio.sleep(10)
+        if is_free_user:
+            await manager.send_update(job_id, "Monetization", "Wiring up the Playful Ad Network... 💸", {"progress": 50})
+        else:
+            await manager.send_update(job_id, "Monetization", "Injecting YOUR custom AdMob IDs... 💰", {"progress": 50})
+            
+        await asyncio.sleep(15)
+        await manager.send_update(job_id, "Capacitor", "Forging the native Android shell... 🛡️", {"progress": 65})
         
-        await manager.send_update(job_id, "Build Complete!", "Your APK is ready for deployment.", {"apk_url": apk_url})
+        await asyncio.sleep(20)
+        if is_free_user:
+            await manager.send_update(job_id, "Compiling", "Compiling Gradle code (Grab a coffee, this takes a minute ☕)...", {"progress": 80})
+        else:
+            await manager.send_update(job_id, "Compiling", "Compiling High-Speed Native Code... ⚡", {"progress": 80})
         
+        await asyncio.sleep(40)
+        if is_free_user:
+            await manager.send_update(job_id, "Finalizing", "Signing and polishing the final APK... ✨", {"progress": 95})
+        else:
+            await manager.send_update(job_id, "Finalizing", "Signing your custom App Bundle... ✨", {"progress": 95})
+        
+        await asyncio.sleep(15) 
+        
+        apk_url = f"[https://github.com/](https://github.com/){GITHUB_OWNER}/{PLAYFUL_BUILDER_REPO}/releases/download/latest-{user['username']}-{req.game_name}/{req.game_name}.apk"
+        
+        if is_free_user:
+            await manager.send_update(job_id, "Build Complete!", "Level Unlocked! Your Android game is ready! 🎮", {"progress": 100, "apk_url": apk_url})
+        else:
+            await manager.send_update(job_id, "Build Complete!", "Masterpiece Complete! Your game is ready for the Play Store! 🏆", {"progress": 100, "apk_url": apk_url})
+
     except Exception as e:
         await manager.send_update(job_id, "failed", str(e))
 
@@ -476,7 +506,7 @@ async def api_get_chat(req: GameRequest):
 async def api_build_apk(req: BuildAPKRequest, background_tasks: BackgroundTasks):
     user = await get_user(req.email)
     job_id = str(uuid.uuid4())
-    JOB_STORE[job_id] = {"status": "queued", "message": "Queuing APK Build..."}
+    JOB_STORE[job_id] = {"status": "queued", "message": "Queuing APK Build...", "progress": 0}
     background_tasks.add_task(build_apk_workflow, job_id, req, user)
     return {"job_id": job_id, "status": "queued"}
 
@@ -504,4 +534,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
-      
