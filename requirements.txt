@@ -7,3 +7,4 @@ python-dotenv
 httpx
 websockets
 google-generativeai
+slowapi
