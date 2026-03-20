@@ -419,16 +419,30 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
             
         supabase.table("users").update({"credits": user["credits"] - cost}).eq("id", user["id"]).execute()
         
-        # GitHub Logic
-        await manager.send_update(job_id, "Initializing Server", f"Preparing your global repository...")
-        await ensure_user_repo_exists(user["username"])
-        
-        await manager.send_update(job_id, "Materializing Server", "Pushing core mechanics to global servers...")
-        await commit_files_to_github(user["username"], req.game_name, manifest["files"], is_binary=False)
-        
-        await manager.send_update(job_id, "Opening Portals", "Configuring live WebGL access...")
-        await github_api("POST", f"/repos/{GITHUB_OWNER}/{user['username']}/pages", {"source": {"branch": "main", "path": "/"}}, return_status=True)
-                
+        # 1. The Start
+        await manager.send_update(job_id, "Waking the Engine 🔋", "Reading your mind... just kidding, parsing your epic game idea! 🧠✨")
+
+        # 2. Inside the req.selected_uids block
+        await manager.send_update(job_id, "Looting the Vault 💎", "Snagging those sick 3D models for your game... 🛸🧊")
+
+         # 3. Generating Code block
+        if current_code:
+            await manager.send_update(job_id, "Remixing Reality 🎛️", "Injecting your brand new mods into the matrix... ⚡🛠️")
+        else:
+            await manager.send_update(job_id, "Forging the World 🌎", "Big Bang in progress! Crafting your 3D universe from scratch... 🌌💥")
+
+        # 4. GitHub Setup
+        await manager.send_update(job_id, "Claiming Turf ⛳", "Securing your own private corner of the multiverse... 🪐")
+
+        # 5. GitHub Push
+        await manager.send_update(job_id, "Packing Pixels 🎒", "Stuffing all the physics and code into the launch tube... 🚀📦")
+
+        # 6. GitHub Pages Setup
+        await manager.send_update(job_id, "Here We Go! 🎢", "Firing up the warp drive! This might take a sec, grab a coffee ☕🔥")
+
+        # 7. The Finale
+        await manager.send_update(job_id, "Level Unlocked! 🎮", manifest["assistant_message"], {"preview_url": preview_url, "cost": cost, "remaining": user["credits"] - cost})
+
         ts = datetime.utcnow().timestamp()
         game_history.append({"role": "user", "content": req.prompt, "ts": ts})
         game_history.append({"role": "assistant", "content": manifest["assistant_message"], "ts": ts + 1})
