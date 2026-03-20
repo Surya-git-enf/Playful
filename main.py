@@ -290,8 +290,6 @@ async def process_and_upload_assets(job_id: str, username: str, game_name: str, 
     
     async with httpx.AsyncClient(follow_redirects=True) as client:
         for uid in uids:
-            await manager.send_update(job_id, "Fetching Assets", f"Downloading 3D model {uid} into the matrix...")
-            
             dl_res = await client.get(f"https://api.sketchfab.com/v3/models/{uid}/download", headers=headers)
             if dl_res.status_code != 200: continue
             
@@ -377,11 +375,12 @@ async def generate_game_with_ai(prompt: str, history: list, game_name: str, curr
         raise Exception(f"Senior AI Error: {str(e)}")
 
 # ==========================================
-# WORKFLOWS
+# WORKFLOWS (With the New Gen Messages!)
 # ==========================================
 async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: dict):
     try:
-        await manager.send_update(job_id, "Analyzing Request", "Consulting the Principal Developer...")
+        # 1. THE START
+        await manager.send_update(job_id, "Waking the Engine 🔋", "Reading your mind... just kidding, parsing your epic game idea! 🧠✨")
         
         chat_history = user.get("chat_history", {})
         game_history = chat_history.get(req.game_name, [])
@@ -395,20 +394,20 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
         if not current_code and current_games >= allowed_games:
             raise Exception("limit_reached")
         
-        # Handle Custom Assets
+        # 2. THE ASSETS
         current_asset_urls = game_assets_db.get(req.game_name, [])
         if req.selected_uids:
-            await manager.send_update(job_id, "Curating Assets", "Processing Sketchfab CC0 Models...")
+            await manager.send_update(job_id, "Looting the Vault 💎", "Snagging those sick 3D models for your game... 🛸🧊")
             new_urls = await process_and_upload_assets(job_id, user["username"], req.game_name, req.selected_uids)
             current_asset_urls.extend(new_urls)
             game_assets_db[req.game_name] = current_asset_urls
             supabase.table("users").update({"game_assets": game_assets_db}).eq("id", user["id"]).execute()
 
-        # Generate Code
+        # 3. THE AI GENERATION
         if current_code:
-            await manager.send_update(job_id, "Rewriting the Matrix", "Injecting your modifications into the game core...")
+            await manager.send_update(job_id, "Remixing Reality 🎛️", "Injecting your brand new mods into the matrix... ⚡🛠️")
         else:
-            await manager.send_update(job_id, "Forging the World", "The AI is currently crafting your 3D universe...")
+            await manager.send_update(job_id, "Forging the World 🌎", "Big Bang in progress! Crafting your 3D universe from scratch... 🌌💥")
             
         manifest = await generate_game_with_ai(req.prompt, game_history, req.game_name, current_code, current_asset_urls)
         
@@ -419,38 +418,27 @@ async def generate_and_commit_workflow(job_id: str, req: GenerateRequest, user: 
             
         supabase.table("users").update({"credits": user["credits"] - cost}).eq("id", user["id"]).execute()
         
-        # 1. The Start
-        await manager.send_update(job_id, "Waking the Engine 🔋", "Reading your mind... just kidding, parsing your epic game idea! 🧠✨")
-
-        # 2. Inside the req.selected_uids block
-        await manager.send_update(job_id, "Looting the Vault 💎", "Snagging those sick 3D models for your game... 🛸🧊")
-
-         # 3. Generating Code block
-        if current_code:
-            await manager.send_update(job_id, "Remixing Reality 🎛️", "Injecting your brand new mods into the matrix... ⚡🛠️")
-        else:
-            await manager.send_update(job_id, "Forging the World 🌎", "Big Bang in progress! Crafting your 3D universe from scratch... 🌌💥")
-
-        # 4. GitHub Setup
+        # 4. GITHUB REPO
         await manager.send_update(job_id, "Claiming Turf ⛳", "Securing your own private corner of the multiverse... 🪐")
-
-        # 5. GitHub Push
+        await ensure_user_repo_exists(user["username"])
+        
+        # 5. GITHUB PUSH
         await manager.send_update(job_id, "Packing Pixels 🎒", "Stuffing all the physics and code into the launch tube... 🚀📦")
-
-        # 6. GitHub Pages Setup
+        await commit_files_to_github(user["username"], req.game_name, manifest["files"], is_binary=False)
+        
+        # 6. GITHUB PAGES
         await manager.send_update(job_id, "Here We Go! 🎢", "Firing up the warp drive! This might take a sec, grab a coffee ☕🔥")
-
-        # 7. The Finale
-        await manager.send_update(job_id, "Level Unlocked! 🎮", manifest["assistant_message"], {"preview_url": preview_url, "cost": cost, "remaining": user["credits"] - cost})
-
+        await github_api("POST", f"/repos/{GITHUB_OWNER}/{user['username']}/pages", {"source": {"branch": "main", "path": "/"}}, return_status=True)
+                
         ts = datetime.utcnow().timestamp()
         game_history.append({"role": "user", "content": req.prompt, "ts": ts})
         game_history.append({"role": "assistant", "content": manifest["assistant_message"], "ts": ts + 1})
         chat_history[req.game_name] = game_history
         supabase.table("users").update({"chat_history": chat_history}).eq("id", user["id"]).execute()
         
+        # 7. THE FINALE
         preview_url = f"https://{GITHUB_OWNER}.github.io/{user['username']}/{req.game_name}/index.html"
-        await manager.send_update(job_id, "Level Unlocked!", manifest["assistant_message"], {"preview_url": preview_url, "cost": cost, "remaining": user["credits"] - cost})
+        await manager.send_update(job_id, "Level Unlocked! 🎮", manifest["assistant_message"], {"preview_url": preview_url, "cost": cost, "remaining": user["credits"] - cost})
         
     except Exception as e:
         await manager.send_update(job_id, "failed", str(e))
@@ -464,6 +452,10 @@ async def build_apk_workflow(job_id: str, req: BuildAPKRequest, user: dict):
         else:
             await manager.send_update(job_id, "Initializing", "Verifying Pro License... 👑", {"progress": 0})
         
+        if user.get("builds", 0) < 1:
+            raise Exception("insufficient_builds")
+            
+        build_cost = 5 if is_free_user else 10
         if user.get("credits", 0) < build_cost:
             raise Exception("insufficient_credits")
 
