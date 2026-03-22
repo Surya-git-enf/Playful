@@ -122,7 +122,13 @@ class AddAdmobRequest(BaseModel):
     admob_banner: str = Field(..., max_length=100)
     admob_interstitial: str = Field(..., max_length=100)
     admob_interval: str = Field(..., max_length=10)
+    
+class ToggleFavoriteRequest(BaseModel):
+    game_name: str = Field(..., pattern=r"^[a-zA-Z0-9_-]+$", max_length=50)
+    is_favorite: bool
 
+class UpdateSettingsRequest(BaseModel):
+    theme: str = Field(..., max_length=50)
 # ==========================================
 # 4. SECURE AUTH & GATEKEEPER LOGIC
 # ==========================================
@@ -150,6 +156,10 @@ async def verify_user(credentials: HTTPAuthorizationCredentials = Security(secur
 
         if "builds" not in user:
             user["builds"] = 0
+        if "favorites" not in user or not user["favorites"]:
+            user["favorites"] = []
+        if "settings" not in user or not user["settings"]:
+            user["settings"] = {"theme": "neon"}   
 
         if days_passed > 0:
             plan = user.get("plan", "free")
@@ -617,6 +627,33 @@ async def get_job_status(job_id: str):
     if job_id not in JOB_STORE:
         raise HTTPException(status_code=404, detail="Job not found")
     return JOB_STORE[job_id]
+
+
+
+@app.post("/toggle-favorite")
+@limiter.limit("20/minute")
+async def api_toggle_favorite(request: Request, req: ToggleFavoriteRequest, user: dict = Depends(verify_user)):
+    favorites = user.get("favorites", [])
+    if req.is_favorite and req.game_name not in favorites:
+        favorites.append(req.game_name)
+    elif not req.is_favorite and req.game_name in favorites:
+        favorites.remove(req.game_name)
+    
+    supabase.table("users").update({"favorites": favorites}).eq("id", user["id"]).execute()
+    return {"status": "success", "favorites": favorites}
+
+@app.post("/update-settings")
+@limiter.limit("10/minute")
+async def api_update_settings(request: Request, req: UpdateSettingsRequest, user: dict = Depends(verify_user)):
+    settings = user.get("settings", {})
+    settings["theme"] = req.theme
+    supabase.table("users").update({"settings": settings}).eq("id", user["id"]).execute()
+    return {"status": "success", "settings": settings}
+
+# ==========================================
+# 8. WEBSOCKETS
+# ==========================================
+
 
 # ==========================================
 # 8. WEBSOCKETS
