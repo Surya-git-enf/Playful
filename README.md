@@ -38,3 +38,9 @@ Unlike generic web-based prompt-to-game builders, Playful is engineered around a
 * **CI/CD & Mobile Compilation:** GitHub Actions, Capacitor, Android Gradle Pipeline
 
 ---
+
+💖 Support the Vision & Invest: GitHub Sponsors
+By sponsoring Playful, you are directly funding the open-source infrastructure of zero-code game creation. We offer specialized tiers for both individual creators and strategic angel investors:
+💡 Creator Tier ($5 - $50/mo): Unlocks beta engine access, priority processing lines, and custom watermark removal features.
+🏢 Studio Tier ($100 - $500/mo): Direct API integration support, priority model loading queues, and custom system-instruction configuration.
+🚀 Strategic Angel Tier ($1,000+/mo or Custom One-Time): For high-net-worth individuals or venture funds looking to back our foundational ecosystem. High-tier sponsorship opens the door for SAFE (Simple Agreement for Future Equity) / Equity allocation conversations as we scale our operations. Sponsoring at this level initiates a direct line to the founding team to review formal investor decks, financial models, and equity distribution terms.
