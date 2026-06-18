@@ -422,10 +422,11 @@ Conversation History:\n{history_text}"""
     last_error = None
     for attempt in range(3):  # FIX #5: retry up to 3 times
         try:
+            
             response = await model_pro.generate_content_async(
-                prompt,
+                f"{sys_instr}\n\nUSER REQUEST:\n{prompt}",
                 generation_config={"response_mime_type": "application/json"},
-            )
+                    )
             return await _parse_ai_json(response.text)
         except json.JSONDecodeError as e:
             last_error = e
