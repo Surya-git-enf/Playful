@@ -8,3 +8,4 @@ httpx
 websockets
 google-generativeai
 slowapi
+anthropic
