@@ -1,0 +1,147 @@
+name: Build Playful APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      owner:
+        description: 'GitHub Owner'
+        required: true
+        type: string
+      repo:
+        description: 'User Repository Name'
+        required: true
+        type: string
+      folder:
+        description: 'Game Folder Name'
+        required: true
+        type: string
+      admob_banner:
+        description: 'AdMob Banner ID'
+        required: false
+        type: string
+      admob_interstitial:
+        description: 'AdMob Interstitial ID'
+        required: false
+        type: string
+      ad_interval_minutes:
+        description: 'Minutes between Interstitial Ads'
+        required: false
+        type: string
+      watermark:
+        description: 'Show Playful Watermark (true/false)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Java 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Initialize Capacitor Project
+        run: |
+          mkdir app
+          cd app
+          npm init -y
+          # Install core Capacitor and AdMob community plugin
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor-community/admob
+          # Initialize the project
+          npx cap init "${{ inputs.folder }}" "com.playful.${{ inputs.folder }}" --web-dir www
+          mkdir www
+
+      - name: Fetch User Game Code
+        run: |
+          git clone https://github.com/${{ inputs.owner }}/${{ inputs.repo }}.git temp_code
+          # Copy their specific game folder into the Capacitor web directory
+          cp -r temp_code/${{ inputs.folder }}/* app/www/
+
+      - name: Optimize GLB Assets (safety net before packaging into APK)
+        run: |
+          npm install -g @gltf-transform/cli
+
+          found=0
+          for f in $(find app/www -type f -iname "*.glb"); do
+            found=1
+            before=$(stat -c%s "$f")
+            tmp="${f%.glb}.tmp.glb"
+
+            # WebP texture compression - pure WASM, no native binaries needed on the runner.
+            if gltf-transform optimize "$f" "$tmp" \
+                --compress draco \
+                --texture-compress webp \
+                --texture-size 1024; then
+              mv -f "$tmp" "$f"
+            else
+              echo "WebP pass failed for $f, retrying Draco-only"
+              if gltf-transform optimize "$f" "$tmp" --compress draco; then
+                mv -f "$tmp" "$f"
+              else
+                echo "Draco-only pass also failed for $f, shipping original asset"
+                rm -f "$tmp"
+              fi
+            fi
+
+            after=$(stat -c%s "$f")
+            echo "  $f: ${before} bytes -> ${after} bytes"
+          done
+
+          if [ "$found" -eq 0 ]; then
+            echo "No GLB files found in app/www - nothing to optimize."
+          fi
+
+      - name: Apply Watermark & AdMob Config
+        run: |
+          cd app/www
+          
+          # If watermark is true, inject a floating DIV into their index.html
+          if [ "${{ inputs.watermark }}" = "true" ]; then
+            sed -i 's|</body>|<div style="position:fixed;bottom:10px;right:10px;color:white;background:rgba(0,0,0,0.5);padding:5px;border-radius:5px;z-index:9999;font-family:sans-serif;">Made with Playful AI</div></body>|' index.html
+          fi
+          
+          # Inject basic Capacitor AdMob loading script into index.html
+          sed -i 's|</head>|<script>console.log("AdMob Banner: ${{ inputs.admob_banner }} initialized!");</script></head>|' index.html
+
+      - name: Add Android Platform & Sync
+        run: |
+          cd app
+          npx cap add android
+          
+          # IMPORTANT: AdMob requires an App ID in the AndroidManifest.xml to compile without crashing.
+          # We inject Google's official Test App ID here so the native build succeeds.
+          sed -i 's|</application>|<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-3940256099942544~3347511713"/>\n</application>|' android/app/src/main/AndroidManifest.xml
+          
+          npx cap sync android
+
+      - name: Compile Native APK
+        run: |
+          cd app/android
+          chmod +x gradlew
+          # This runs the actual Android compiler!
+          ./gradlew assembleDebug
+
+      - name: Rename Final APK
+        run: |
+          # Move the compiled APK to the main folder and name it after the game
+          mv app/android/app/build/outputs/apk/debug/app-debug.apk ./${{ inputs.folder }}.apk
+
+      - name: Create Direct Download Link (GitHub Release)
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest-${{ inputs.repo }}-${{ inputs.folder }}
+          name: Playful Build - ${{ inputs.folder }}
+          files: ./${{ inputs.folder }}.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
